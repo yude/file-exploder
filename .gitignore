@@ -1,5 +1,5 @@
 # Binaries
-file-exploder
+/Server/file-exploder
 *.exe
 *.exe~
 *.dll
