@@ -31,10 +31,6 @@ func (e *Executor) Execute(job *queue.Job) error {
 		return e.executeMkdir(job)
 	case queue.JobChmod:
 		return e.executeChmod(job)
-	case queue.JobUpload:
-		return e.executeUpload(job)
-	case queue.JobDownload:
-		return e.executeDownload(job)
 	default:
 		return fmt.Errorf("unknown job type: %s", job.Type)
 	}
@@ -93,20 +89,6 @@ func (e *Executor) executeChmod(job *queue.Job) error {
 		return err
 	}
 	return os.Chmod(job.DstPath, mode)
-}
-
-func (e *Executor) executeUpload(job *queue.Job) error {
-	if err := validatePaths(job.SrcPath, job.DstPath); err != nil {
-		return err
-	}
-	return copyFile(job.SrcPath, job.DstPath)
-}
-
-func (e *Executor) executeDownload(job *queue.Job) error {
-	if err := validatePaths(job.SrcPath, job.DstPath); err != nil {
-		return err
-	}
-	return copyFile(job.SrcPath, job.DstPath)
 }
 
 func validatePaths(paths ...string) error {
@@ -187,7 +169,7 @@ func copyFile(src, dst string) error {
 	}
 
 	dstFile.Close() // Explicitly close before rename
-	
+
 	if _, err := os.Lstat(dst); err == nil {
 		return fmt.Errorf("destination already exists: %s", dst)
 	}

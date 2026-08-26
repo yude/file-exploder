@@ -10,6 +10,11 @@ class FileListViewModel: ObservableObject {
     @Published var pathHistory: [String] = []
     @Published var pathHistoryIndex: Int = -1
     
+    @AppStorage("showHiddenFiles") private var showHiddenFiles = false
+    @AppStorage("refreshInterval") private var refreshInterval = 5.0
+    private var refreshTask: Task<Void, Never>?
+    private var navigationGeneration = 0
+    
     private(set) var sftp: SFTPService?
     private var ssh: SSHConnection?
     
@@ -29,6 +34,15 @@ class FileListViewModel: ObservableObject {
         do {
             try await sshConnection.testConnection()
             await navigateTo(path: server.remoteRoot)
+            
+            // start observing setting changes
+            NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: nil) { [weak self] _ in
+                Task { [weak self] in
+                    await self?.startAutoRefresh()
+                    await self?.refresh()
+                }
+            }
+            
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -39,6 +53,11 @@ class FileListViewModel: ObservableObject {
         if let process = self.ssh?.process, process.isRunning {
             process.terminate()
         }
+        refreshTask?.cancel()
+        refreshTask = nil
+        navigationGeneration += 1
+        NotificationCenter.default.removeObserver(self)
+        
         self.ssh = nil
         self.sftp = nil
         self.files = []
@@ -60,6 +79,7 @@ class FileListViewModel: ObservableObject {
         }
         
         await loadPath(path, updateHistory: true)
+        startAutoRefresh()
     }
     
     func goBack() async {
@@ -193,10 +213,14 @@ class FileListViewModel: ObservableObject {
     private func loadPath(_ path: String, updateHistory: Bool) async {
         guard let sftp = sftp else { return }
         
+        navigationGeneration += 1
+        let currentGeneration = navigationGeneration
+        
         isLoading = true
         errorMessage = nil
         do {
             let fileList = try await sftp.listDirectory(path: path)
+            guard currentGeneration == navigationGeneration else { return }
             
             if updateHistory {
                 if pathHistoryIndex < pathHistory.count - 1 {
@@ -207,15 +231,43 @@ class FileListViewModel: ObservableObject {
             }
             
             currentPath = path
-            files = fileList.sorted { lhs, rhs in
+            let visibleFiles = showHiddenFiles ? fileList : fileList.filter { !$0.name.hasPrefix(".") }
+            files = visibleFiles.sorted { lhs, rhs in
                 if lhs.isDirectory != rhs.isDirectory {
                     return lhs.isDirectory
                 }
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
         } catch {
+            guard currentGeneration == navigationGeneration else { return }
             errorMessage = error.localizedDescription
         }
-        isLoading = false
+        
+        if currentGeneration == navigationGeneration {
+            isLoading = false
+        }
+    }
+    
+    private func startAutoRefresh() {
+        refreshTask?.cancel()
+        guard refreshInterval > 0 else { return }
+        
+        refreshTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(refreshInterval * 1_000_000_000))
+                guard !Task.isCancelled else { break }
+                
+                // Background refresh without showing loading indicator
+                if let sftp = self.sftp {
+                    if let fileList = try? await sftp.listDirectory(path: self.currentPath) {
+                        let visibleFiles = self.showHiddenFiles ? fileList : fileList.filter { !$0.name.hasPrefix(".") }
+                        self.files = visibleFiles.sorted { lhs, rhs in
+                            if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
+                            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                        }
+                    }
+                }
+            }
+        }
     }
 }

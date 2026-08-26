@@ -118,7 +118,7 @@ class SSHConnection: ObservableObject {
         
         // Connection options
         args.append(contentsOf: ["-p", String(server.port)])
-        args.append(contentsOf: ["-o", "StrictHostKeyChecking=no"])
+        args.append(contentsOf: ["-o", "StrictHostKeyChecking=accept-new"])
         args.append(contentsOf: ["-o", "ConnectTimeout=10"])
         args.append(contentsOf: ["-o", "BatchMode=yes"])
         args.append(contentsOf: ["-o", "ServerAliveInterval=5"])
@@ -129,9 +129,6 @@ class SSHConnection: ObservableObject {
         if let keyPath = server.keyPath, server.authType == .sshKey {
             args.append(contentsOf: ["-i", keyPath])
         }
-        
-        // Disable known hosts checking for simplicity
-        args.append(contentsOf: ["-o", "UserKnownHostsFile=/dev/null"])
         
         // Target
         args.append("\(server.username)@\(server.hostname)")

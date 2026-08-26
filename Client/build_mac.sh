@@ -52,6 +52,9 @@ cat <<PLIST > "$CONTENTS_DIR/Info.plist"
 </plist>
 PLIST
 
+echo "Signing App Bundle..."
+codesign --force --deep -s - "$APP_NAME"
+
 echo "App bundle created at: $PWD/$APP_NAME"
 echo "You can move this to /Applications with:"
 echo "  cp -r $APP_NAME /Applications/"

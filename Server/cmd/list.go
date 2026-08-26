@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -42,7 +41,7 @@ func runList(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			continue // Skip files we can't stat
 		}
-		
+
 		results = append(results, FileInfo{
 			Name:             entry.Name(),
 			Path:             filepath.Join(target, entry.Name()),

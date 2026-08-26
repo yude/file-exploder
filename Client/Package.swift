@@ -9,15 +9,11 @@ let package = Package(
     products: [
         .executable(name: "file-exploder", targets: ["file-exploder"])
     ],
-    dependencies: [
-        .package(url: "https://github.com/Kitura/BlueSSLService.git", from: "2.0.0"),
-    ],
+    dependencies: [],
     targets: [
         .executableTarget(
             name: "file-exploder",
-            dependencies: [
-                .product(name: "SSLService", package: "BlueSSLService")
-            ],
+            dependencies: [],
             path: "file-exploder"
         )
     ]

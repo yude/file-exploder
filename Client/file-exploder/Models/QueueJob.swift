@@ -19,8 +19,6 @@ struct QueueJob: Identifiable, Codable {
         case copy
         case mkdir
         case chmod
-        case upload
-        case download
         
         var displayName: String {
             switch self {
@@ -30,8 +28,6 @@ struct QueueJob: Identifiable, Codable {
             case .copy: return "コピー"
             case .mkdir: return "新規フォルダ"
             case .chmod: return "権限変更"
-            case .upload: return "アップロード"
-            case .download: return "ダウンロード"
             }
         }
         
@@ -43,8 +39,6 @@ struct QueueJob: Identifiable, Codable {
             case .copy: return "doc.on.doc"
             case .mkdir: return "folder.badge.plus"
             case .chmod: return "lock.shield"
-            case .upload: return "arrow.up.circle"
-            case .download: return "arrow.down.circle"
             }
         }
     }
@@ -81,10 +75,6 @@ struct QueueJob: Identifiable, Codable {
             return "作成 \(dstPath ?? "")"
         case .chmod:
             return "権限変更 \(dstPath ?? "") to \(mode ?? "")"
-        case .upload:
-            return "アップロード \(srcPath ?? "") -> \(dstPath ?? "")"
-        case .download:
-            return "ダウンロード \(srcPath ?? "") -> \(dstPath ?? "")"
         }
     }
 }

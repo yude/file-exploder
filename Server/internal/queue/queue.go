@@ -7,14 +7,12 @@ import (
 type JobType string
 
 const (
-	JobRename   JobType = "rename"
-	JobMove     JobType = "move"
-	JobDelete   JobType = "delete"
-	JobCopy     JobType = "copy"
-	JobMkdir    JobType = "mkdir"
-	JobChmod    JobType = "chmod"
-	JobUpload   JobType = "upload"
-	JobDownload JobType = "download"
+	JobRename JobType = "rename"
+	JobMove   JobType = "move"
+	JobDelete JobType = "delete"
+	JobCopy   JobType = "copy"
+	JobMkdir  JobType = "mkdir"
+	JobChmod  JobType = "chmod"
 )
 
 type JobStatus string
@@ -28,14 +26,14 @@ const (
 )
 
 type Job struct {
-	ID          string    `json:"id"`
-	Type        JobType   `json:"type"`
-	SrcPath     string    `json:"src_path,omitempty"`
-	DstPath     string    `json:"dst_path,omitempty"`
-	Mode        string    `json:"mode,omitempty"`
-	Status      JobStatus `json:"status"`
-	Error       string    `json:"error,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string     `json:"id"`
+	Type        JobType    `json:"type"`
+	SrcPath     string     `json:"src_path,omitempty"`
+	DstPath     string     `json:"dst_path,omitempty"`
+	Mode        string     `json:"mode,omitempty"`
+	Status      JobStatus  `json:"status"`
+	Error       string     `json:"error,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }

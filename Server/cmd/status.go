@@ -26,7 +26,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	if err := cfg.EnsureDirs(); err != nil {
 		return err
 	}
-	
+
 	q, err := queue.NewSQLiteQueue(cfg.DBPath)
 	if err != nil {
 		return err
