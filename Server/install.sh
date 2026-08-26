@@ -27,7 +27,12 @@ chmod +x "$INSTALL_DIR/file-exploder"
 
 # Install service
 echo "Installing systemd service..."
-cp file-exploder.service "$SERVICE_DIR/file-exploder.service"
+if [ "$EUID" -eq 0 ]; then
+    cp file-exploder.service "$SERVICE_DIR/file-exploder.service"
+else
+    # Replace /usr/local/bin with ~/.local/bin in user service
+    sed "s|/usr/local/bin/file-exploder|$INSTALL_DIR/file-exploder|g" file-exploder.service > "$SERVICE_DIR/file-exploder.service"
+fi
 
 if [ "$EUID" -eq 0 ]; then
     systemctl daemon-reload
