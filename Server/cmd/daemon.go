@@ -92,11 +92,16 @@ func processPendingJobs(q queue.Queue, exec *executor.Executor, logger *log.Logg
 
 		if err := exec.Execute(job); err != nil {
 			logger.Printf("Job %s failed: %v", job.ID, err)
-			_ = q.UpdateStatus(job.ID, queue.StatusFailed, err.Error())
+			errUpdate := q.UpdateStatus(job.ID, queue.StatusFailed, err.Error())
+			if errUpdate != nil {
+				logger.Printf("FATAL: Failed to update job %s to failed: %v", job.ID, errUpdate)
+			}
 			continue
 		}
 
 		logger.Printf("Job %s completed", job.ID)
-		_ = q.UpdateStatus(job.ID, queue.StatusCompleted, "")
+		if errUpdate := q.UpdateStatus(job.ID, queue.StatusCompleted, ""); errUpdate != nil {
+			logger.Printf("FATAL: Failed to update job %s to completed: %v", job.ID, errUpdate)
+		}
 	}
 }

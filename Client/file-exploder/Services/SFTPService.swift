@@ -132,7 +132,7 @@ class SFTPService {
     }
     
     /// Wait for job to complete
-    func waitForJob(id: String, timeout: TimeInterval = 10.0) async throws {
+    func waitForJob(id: String, timeout: TimeInterval = 60.0) async throws {
         let start = Date()
         while Date().timeIntervalSince(start) < timeout {
             let job = try await getJobStatus(id: id)
@@ -141,11 +141,14 @@ class SFTPService {
             } else if job.status == .failed {
                 throw QueueError.invalidResponse(job.error ?? "Unknown error")
             } else if job.status == .cancelled {
-                throw QueueError.invalidResponse("Job was cancelled")
+                throw QueueError.invalidResponse("ジョブがキャンセルされました")
             }
-            try await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+            if Task.isCancelled {
+                throw QueueError.invalidResponse("処理が中断されました")
+            }
         }
-        throw QueueError.invalidResponse("Timeout waiting for job completion")
+        throw QueueError.invalidResponse("処理がタイムアウトしました")
     }
     
     /// Cancel a queue job

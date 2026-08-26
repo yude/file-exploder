@@ -248,17 +248,30 @@ struct FileListView: View {
                 movingFile = file
             }
             
-            Button("コピー") {
+            Button("サーバー内で複製") {
                 let toCopy = filteredFiles.filter { selectedFiles.contains($0.id) }
                 if toCopy.isEmpty, let file = filteredFiles.first(where: { $0.id == file.id }) {
                     moveDestinationText = viewModel.currentPath
                     copyingFile = file
                 } else if !toCopy.isEmpty {
-                    // 複数コピーは今のところ1つずつしかできないので、最初のものを対象とするか TODO
                     if let file = toCopy.first {
                         moveDestinationText = viewModel.currentPath
                         copyingFile = file
                     }
+                }
+            }
+            
+            Button("パスをコピー") {
+                let toCopy = filteredFiles.filter { selectedFiles.contains($0.id) }
+                if toCopy.isEmpty, let file = filteredFiles.first(where: { $0.id == file.id }) {
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.setString(file.path, forType: .string)
+                } else if !toCopy.isEmpty {
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    let paths = toCopy.map { $0.path }
+                    pb.writeObjects(paths as [NSString])
                 }
             }
             

@@ -86,6 +86,7 @@ class FileListViewModel: ObservableObject {
             let rootPath = (serverRoot as NSString).standardizingPath
             let targetPath = (path as NSString).standardizingPath
             if !targetPath.hasPrefix(rootPath) && targetPath != rootPath {
+                errorMessage = "アクセスが許可されていません"
                 return
             }
         }
@@ -117,6 +118,7 @@ class FileListViewModel: ObservableObject {
             let rootPath = (serverRoot as NSString).standardizingPath
             let targetPath = (parent as NSString).standardizingPath
             if !targetPath.hasPrefix(rootPath) && targetPath != rootPath {
+                errorMessage = "アクセスが許可されていません"
                 return
             }
         }
@@ -140,7 +142,7 @@ class FileListViewModel: ObservableObject {
         var finalError: String?
         do {
             let id = try await sftp.addToQueue(type: "mkdir", src: nil, dst: newPath)
-            try await sftp.waitForJob(id: id)
+            try await sftp.waitForJob(id: id, timeout: 60.0)
         } catch {
             finalError = "フォルダ作成エラー: \(error.localizedDescription)"
         }
@@ -164,7 +166,7 @@ class FileListViewModel: ObservableObject {
         }
         for id in waitIds {
             do {
-                try await sftp.waitForJob(id: id)
+                try await sftp.waitForJob(id: id, timeout: 60.0)
             } catch {
                 finalErrors.append("削除エラー: \(error.localizedDescription)")
             }
@@ -181,7 +183,7 @@ class FileListViewModel: ObservableObject {
         var finalError: String?
         do {
             let id = try await sftp.addToQueue(type: "rename", src: file.path, dst: newPath)
-            try await sftp.waitForJob(id: id)
+            try await sftp.waitForJob(id: id, timeout: 60.0)
         } catch {
             finalError = "名前変更エラー: \(error.localizedDescription)"
         }
@@ -206,7 +208,7 @@ class FileListViewModel: ObservableObject {
         }
         for id in waitIds {
             do {
-                try await sftp.waitForJob(id: id, timeout: 30.0)
+                try await sftp.waitForJob(id: id, timeout: 60.0)
             } catch {
                 finalErrors.append("コピーエラー: \(error.localizedDescription)")
             }
@@ -232,7 +234,7 @@ class FileListViewModel: ObservableObject {
         }
         for id in waitIds {
             do {
-                try await sftp.waitForJob(id: id, timeout: 30.0)
+                try await sftp.waitForJob(id: id, timeout: 60.0)
             } catch {
                 finalErrors.append("移動エラー: \(error.localizedDescription)")
             }
@@ -248,7 +250,7 @@ class FileListViewModel: ObservableObject {
         var finalError: String?
         do {
             let id = try await sftp.addToQueue(type: "chmod", src: nil, dst: file.path, mode: mode)
-            try await sftp.waitForJob(id: id)
+            try await sftp.waitForJob(id: id, timeout: 60.0)
         } catch {
             finalError = "権限変更エラー (\(file.name)): \(error.localizedDescription)"
         }
@@ -263,6 +265,16 @@ class FileListViewModel: ObservableObject {
         
         navigationGeneration += 1
         let currentGeneration = navigationGeneration
+        
+        // Final sanity check before making external call
+        if let serverRoot = ssh?.server.remoteRoot {
+            let rootPath = (serverRoot as NSString).standardizingPath
+            let targetPath = (path as NSString).standardizingPath
+            if !targetPath.hasPrefix(rootPath) && targetPath != rootPath {
+                errorMessage = "アクセスが許可されていません"
+                return
+            }
+        }
         
         isLoading = true
         errorMessage = nil

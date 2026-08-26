@@ -56,7 +56,21 @@ func (e *Executor) executeRename(job *queue.Job) error {
 	if _, err := os.Lstat(job.DstPath); err == nil {
 		return fmt.Errorf("destination path already exists: %s", job.DstPath)
 	}
-	return os.Rename(job.SrcPath, job.DstPath)
+	// For renaming across devices, fallback to copy+delete
+	err := os.Rename(job.SrcPath, job.DstPath)
+	if err != nil {
+		if strings.Contains(err.Error(), "cross-device link") || strings.Contains(err.Error(), "invalid cross-device link") {
+			if copyErr := copyPath(job.SrcPath, job.DstPath); copyErr != nil {
+				return fmt.Errorf("cross-device rename failed during copy: %v", copyErr)
+			}
+			if delErr := os.RemoveAll(job.SrcPath); delErr != nil {
+				return fmt.Errorf("cross-device rename failed to delete source: %v", delErr)
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (e *Executor) executeDelete(job *queue.Job) error {
@@ -90,7 +104,9 @@ func (e *Executor) executeMkdir(job *queue.Job) error {
 	if err := validatePaths(job.DstPath); err != nil {
 		return err
 	}
-	return os.MkdirAll(job.DstPath, 0755)
+	
+	// Create with restrictive permissions first
+	return os.MkdirAll(job.DstPath, 0700)
 }
 
 func (e *Executor) executeChmod(job *queue.Job) error {
@@ -107,6 +123,10 @@ func (e *Executor) executeChmod(job *queue.Job) error {
 	if err != nil {
 		return err
 	}
+	// Verify target exists
+	if _, err := os.Lstat(job.DstPath); err != nil {
+		return err
+	}
 	return os.Chmod(job.DstPath, mode)
 }
 
@@ -121,6 +141,10 @@ func validatePaths(paths ...string) error {
 		}
 		if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 			return fmt.Errorf("path cannot contain relative parent references: %s", p)
+		}
+		// Also block absolute paths that resolve to system roots even if indirectly
+		if cleaned == "/bin" || cleaned == "/boot" || cleaned == "/dev" || cleaned == "/etc" || cleaned == "/lib" || cleaned == "/lib64" || cleaned == "/proc" || cleaned == "/root" || cleaned == "/run" || cleaned == "/sbin" || cleaned == "/sys" || cleaned == "/usr" || cleaned == "/var" {
+			return fmt.Errorf("path cannot be a system directory: %s", p)
 		}
 	}
 	return nil
