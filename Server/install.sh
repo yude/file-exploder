@@ -22,6 +22,13 @@ go build -buildvcs=false -o file-exploder .
 
 # Install binary
 echo "Installing to $INSTALL_DIR/file-exploder"
+# Stop existing service if running so we can overwrite the binary
+if [ "$EUID" -eq 0 ]; then
+    systemctl stop file-exploder 2>/dev/null || true
+else
+    systemctl --user stop file-exploder 2>/dev/null || true
+fi
+
 cp file-exploder "$INSTALL_DIR/file-exploder"
 chmod +x "$INSTALL_DIR/file-exploder"
 
