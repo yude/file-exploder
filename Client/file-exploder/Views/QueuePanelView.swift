@@ -151,11 +151,15 @@ struct QueueJobRow: View {
                     .foregroundColor(.secondary)
             }
             
-            if job.status == .pending || job.status == .running {
+            if job.status == .pending {
                 Button("キャンセル") {
                     Task {
                         if let sftp = sftp {
-                            try? await sftp.cancelJob(id: job.id)
+                            do {
+                                try await sftp.cancelJob(id: job.id)
+                            } catch {
+                                // Ignore error if it fails (might have just started running)
+                            }
                             onRefresh()
                         }
                     }

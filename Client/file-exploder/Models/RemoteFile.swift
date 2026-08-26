@@ -6,8 +6,12 @@ struct RemoteFile: Identifiable, Hashable {
     let path: String
     let size: Int64
     let modificationDate: Date
-    let isDirectory: Bool
-    let permissions: FilePermissions
+    var isDirectory: Bool // Changed to var so permissions can mutate it
+    var permissions: FilePermissions {
+        didSet {
+            permissions.isDirectory = self.isDirectory
+        }
+    }
     
     var displayName: String {
         name
@@ -37,6 +41,7 @@ struct RemoteFile: Identifiable, Hashable {
 }
 
 struct FilePermissions: Hashable {
+    var isDirectory: Bool = false
     let ownerRead: Bool
     let ownerWrite: Bool
     let ownerExecute: Bool
@@ -54,13 +59,19 @@ struct FilePermissions: Hashable {
         return "\(owner)\(group)\(other)"
     }
     
-    func symbolicString(isDirectory: Bool) -> String {
-        func triad(_ r: Bool, _ w: Bool, _ x: Bool) -> String {
-            (r ? "r" : "-") + (w ? "w" : "-") + (x ? "x" : "-")
-        }
-        return (isDirectory ? "d" : "-") + triad(ownerRead, ownerWrite, ownerExecute)
-            + triad(groupRead, groupWrite, groupExecute)
-            + triad(otherRead, otherWrite, otherExecute)
+    var symbolicString: String {
+        var str = isDirectory ? "d" : "-"
+        
+        str += ownerRead ? "r" : "-"
+        str += ownerWrite ? "w" : "-"
+        str += ownerExecute ? "x" : "-"
+        str += groupRead ? "r" : "-"
+        str += groupWrite ? "w" : "-"
+        str += groupExecute ? "x" : "-"
+        str += otherRead ? "r" : "-"
+        str += otherWrite ? "w" : "-"
+        str += otherExecute ? "x" : "-"
+        return str
     }
     
     static func from(octal: Int) -> FilePermissions {

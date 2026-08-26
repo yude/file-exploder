@@ -11,6 +11,7 @@ struct FileListView: View {
     @State private var renameText = ""
     @State private var movingFile: RemoteFile?
     @State private var moveDestinationText = ""
+    @State private var copyingFile: RemoteFile?
     
     @State private var showingDeleteConfirmation = false
     @State private var filesToDelete: [RemoteFile] = []
@@ -92,8 +93,8 @@ struct FileListView: View {
                     }
                     .width(min: 120, ideal: 150)
                     
-                    TableColumn("権限", value: \.permissions.octalString) { file in
-                        Text(file.permissions.octalString)
+                    TableColumn("権限", value: \.permissions.symbolicString) { file in
+                        Text(file.permissions.symbolicString)
                             .font(.system(.body, design: .monospaced))
                             .foregroundColor(.secondary)
                     }
@@ -137,6 +138,15 @@ struct FileListView: View {
                     await viewModel.moveFiles([file], to: moveDestinationText)
                     moveDestinationText = ""
                     movingFile = nil
+                }
+            }
+        }
+        .sheet(item: $copyingFile) { file in
+            MoveSheet(destination: $moveDestinationText, isCopy: true) {
+                Task {
+                    await viewModel.copyFiles([file], to: moveDestinationText)
+                    moveDestinationText = ""
+                    copyingFile = nil
                 }
             }
         }
@@ -240,14 +250,27 @@ struct FileListView: View {
             
             Button("コピー") {
                 let toCopy = filteredFiles.filter { selectedFiles.contains($0.id) }
-                if toCopy.isEmpty, let file = filteredFiles.first(where: { $0.id == file.id }) { // Fallback if right-clicked without selection
-                    let pb = NSPasteboard.general
-                    pb.clearContents()
-                    pb.setString(file.path, forType: .string)
+                if toCopy.isEmpty, let file = filteredFiles.first(where: { $0.id == file.id }) {
+                    moveDestinationText = viewModel.currentPath
+                    copyingFile = file
                 } else if !toCopy.isEmpty {
-                    let pb = NSPasteboard.general
-                    pb.clearContents()
-                    pb.writeObjects(toCopy.map { $0.path as NSString })
+                    // 複数コピーは今のところ1つずつしかできないので、最初のものを対象とするか TODO
+                    if let file = toCopy.first {
+                        moveDestinationText = viewModel.currentPath
+                        copyingFile = file
+                    }
+                }
+            }
+            
+            Button("パスをコピー") {
+                let toCopy = filteredFiles.filter { selectedFiles.contains($0.id) }
+                if toCopy.isEmpty, let file = filteredFiles.first(where: { $0.id == file.id }) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(file.path, forType: .string)
+                } else if !toCopy.isEmpty {
+                    NSPasteboard.general.clearContents()
+                    let paths = toCopy.map { $0.path }
+                    NSPasteboard.general.writeObjects(paths as [NSString])
                 }
             }
             
@@ -369,15 +392,16 @@ struct RenameSheet: View {
 
 struct MoveSheet: View {
     @Binding var destination: String
+    var isCopy: Bool = false
     let onMove: () -> Void
     @Environment(\.dismiss) private var dismiss
     
     var body: some View {
         VStack(spacing: 16) {
-            Text("移動")
+            Text(isCopy ? "サーバー内で複製" : "移動")
                 .font(.headline)
             
-            TextField("移動先のディレクトリ", text: $destination)
+            TextField(isCopy ? "複製先のディレクトリ" : "移動先のディレクトリ", text: $destination)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { onMove() }
             
@@ -389,7 +413,7 @@ struct MoveSheet: View {
                 }
                 .keyboardShortcut(.cancelAction)
                 
-                Button("移動") {
+                Button(isCopy ? "複製" : "移動") {
                     onMove()
                 }
                 .keyboardShortcut(.defaultAction)

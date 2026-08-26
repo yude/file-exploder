@@ -1,15 +1,15 @@
-# file-exploder
+# RemoteFS (file-exploder)
 
 A native macOS SSH remote file manager with server-side operation queuing.
 
 ## Features
 
 - **Native macOS UI** — Built with SwiftUI, feels like Finder
-- **SSH/SFTP** — Connect to any Linux server via SSH
+- **SSH** — Connect to any Linux server via SSH
 - **Finder-like Interface** — List view with sorting, searching, and multi-selection
 - **Server-Side Queue** — File operations continue even after client disconnect
 - **Persistent Operations** — Queue survives client disconnection
-- **Multiple Operations** — Rename, delete, copy, mkdir, chmod, upload, download
+- **Multiple Operations** — Rename, move, delete, copy, mkdir, chmod
 
 ## Architecture
 
@@ -65,6 +65,7 @@ Or open `Client/Package.swift` in Xcode and build (Command+B).
 ```bash
 # Add operation to queue
 file-exploder add --type rename --src /path/a --dst /path/b
+file-exploder add --type move --src /path/a --dst /path/newdir/a
 file-exploder add --type delete --src /path/file
 file-exploder add --type mkdir --dst /path/newdir
 file-exploder add --type chmod --dst /path/file --mode 755

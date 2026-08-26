@@ -6,8 +6,8 @@ struct QueueJob: Identifiable, Codable {
     let srcPath: String?
     let dstPath: String?
     let mode: String?
-    let status: JobStatus
-    let error: String?
+    var status: JobStatus // changed to var to allow updating
+    var error: String?
     let createdAt: Date
     let startedAt: Date?
     let completedAt: Date?

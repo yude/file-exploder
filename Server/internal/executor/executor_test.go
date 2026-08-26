@@ -32,26 +32,25 @@ func TestValidatePaths(t *testing.T) {
 func TestExecuteMkdirAndDelete(t *testing.T) {
 	e := NewExecutor(nil) // Queue interface not strictly needed for these operations
 
-	tmpDir := filepath.Join(os.TempDir(), "file-exploder-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
-	jobMkdir := &queue.Job{Type: queue.JobMkdir, DstPath: tmpDir}
+	jobMkdir := &queue.Job{Type: queue.JobMkdir, DstPath: filepath.Join(tmpDir, "new_dir")}
 	err := e.Execute(jobMkdir)
 	if err != nil {
 		t.Fatalf("Mkdir failed: %v", err)
 	}
 
-	if _, err := os.Stat(tmpDir); os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(tmpDir, "new_dir")); os.IsNotExist(err) {
 		t.Fatal("Directory was not created")
 	}
 
-	jobDel := &queue.Job{Type: queue.JobDelete, SrcPath: tmpDir}
+	jobDel := &queue.Job{Type: queue.JobDelete, SrcPath: filepath.Join(tmpDir, "new_dir")}
 	err = e.Execute(jobDel)
 	if err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
 
-	if _, err := os.Stat(tmpDir); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(tmpDir, "new_dir")); !os.IsNotExist(err) {
 		t.Fatal("Directory was not deleted")
 	}
 }

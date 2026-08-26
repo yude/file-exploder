@@ -22,6 +22,7 @@ class ConnectionViewModel: ObservableObject {
             servers = try JSONDecoder().decode([Server].self, from: data)
         } catch {
             print("Failed to decode saved servers: \(error)")
+            connectionError = "サーバー設定の読み込みに失敗しました: \(error.localizedDescription)"
         }
     }
     
@@ -31,6 +32,7 @@ class ConnectionViewModel: ObservableObject {
             UserDefaults.standard.set(data, forKey: serversKey)
         } catch {
             print("Failed to encode servers: \(error)")
+            connectionError = "サーバー設定の保存に失敗しました: \(error.localizedDescription)"
         }
     }
     

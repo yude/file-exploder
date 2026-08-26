@@ -3,20 +3,49 @@ import Network
 
 /// SSH connection manager using Process-based SSH execution
 /// For production, this would use libssh2 directly
-class SSHConnection: ObservableObject {
+class SSHConnection: ObservableObject, @unchecked Sendable {
     @Published var isConnected = false
     @Published var connectionError: String?
     
     let server: Server
     var process: Process? // Public access for disconnection
     
+    private let activeProcessesLock = NSLock()
+    private var activeProcesses: [Process] = []
+    
     init(server: Server) {
         self.server = server
+    }
+    
+    func terminateAll() {
+        activeProcessesLock.lock()
+        let procs = activeProcesses
+        activeProcesses.removeAll()
+        activeProcessesLock.unlock()
+        
+        for p in procs {
+            if p.isRunning {
+                p.terminate()
+            }
+        }
+        if let p = process, p.isRunning {
+            p.terminate()
+        }
     }
     
     /// Execute a command over SSH and return the output
     func executeCommand(_ command: String) async throws -> String {
         let process = Process()
+        
+        activeProcessesLock.lock()
+        activeProcesses.append(process)
+        activeProcessesLock.unlock()
+        
+        defer {
+            activeProcessesLock.lock()
+            activeProcesses.removeAll { $0 === process }
+            activeProcessesLock.unlock()
+        }
         
         return try await withTaskCancellationHandler {
             return try await withCheckedThrowingContinuation { continuation in
@@ -50,16 +79,16 @@ class SSHConnection: ObservableObject {
                     outputData.append(pipe.fileHandleForReading.readDataToEndOfFile())
                     errorData.append(errorPipe.fileHandleForReading.readDataToEndOfFile())
                     
-                    let out = outputData.get()
+                    let data = outputData.get()
                     let err = errorData.get()
-                    
+                
                     if process.terminationStatus == 0 {
-                        let output = String(data: out, encoding: .utf8) ?? ""
+                        let output = String(data: data, encoding: .utf8) ?? ""
                         continuation.resume(returning: output)
                     } else {
                         var errorStr = String(data: err, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                         if errorStr.isEmpty {
-                            errorStr = String(data: out, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error (Exit code: \(process.terminationStatus))"
+                            errorStr = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error (Exit code: \(process.terminationStatus))"
                         }
                         
                         // 既知のSSHやコマンドエラーをユーザーフレンドリーに変換
@@ -104,8 +133,8 @@ class SSHConnection: ObservableObject {
     /// Test the SSH connection
     func testConnection() async throws {
         let output = try await executeCommand("echo 'connection_ok'")
-        guard output.trimmingCharacters(in: .whitespacesAndNewlines) == "connection_ok" else {
-            throw SSHError.connectionFailed("Unexpected response")
+        guard output.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("connection_ok") else {
+            throw SSHError.connectionFailed("Unexpected response: \(output)")
         }
         await MainActor.run {
             isConnected = true
@@ -118,9 +147,10 @@ class SSHConnection: ObservableObject {
         
         // Connection options
         args.append(contentsOf: ["-p", String(server.port)])
+        // Disable known hosts checking for simplicity
+        // Note: StrictHostKeyChecking=accept-new is better but not supported by all SSH versions
         args.append(contentsOf: ["-o", "StrictHostKeyChecking=accept-new"])
         args.append(contentsOf: ["-o", "ConnectTimeout=10"])
-        args.append(contentsOf: ["-o", "BatchMode=yes"])
         args.append(contentsOf: ["-o", "ServerAliveInterval=5"])
         args.append(contentsOf: ["-o", "ServerAliveCountMax=3"])
         args.append(contentsOf: ["-o", "LogLevel=ERROR"])

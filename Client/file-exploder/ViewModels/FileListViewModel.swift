@@ -14,6 +14,8 @@ class FileListViewModel: ObservableObject {
     @AppStorage("refreshInterval") private var refreshInterval = 5.0
     private var refreshTask: Task<Void, Never>?
     private var navigationGeneration = 0
+    private var settingsObserver: NSObjectProtocol?
+    private var sshTasks: [Task<Void, Never>] = []
     
     private(set) var sftp: SFTPService?
     private var ssh: SSHConnection?
@@ -31,18 +33,21 @@ class FileListViewModel: ObservableObject {
         self.ssh = sshConnection
         self.sftp = SFTPService(ssh: sshConnection)
         
+        // start observing setting changes before connecting to ensure clean state
+        if let obs = settingsObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
+        settingsObserver = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: nil) { [weak self] _ in
+            let task = Task { [weak self] in
+                await self?.startAutoRefresh()
+                await self?.refresh()
+            }
+            self?.sshTasks.append(task)
+        }
+        
         do {
             try await sshConnection.testConnection()
             await navigateTo(path: server.remoteRoot)
-            
-            // start observing setting changes
-            NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: nil) { [weak self] _ in
-                Task { [weak self] in
-                    await self?.startAutoRefresh()
-                    await self?.refresh()
-                }
-            }
-            
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -50,13 +55,20 @@ class FileListViewModel: ObservableObject {
     
     func disconnect() {
         // 現在実行中のプロセスがあればキャンセルする
-        if let process = self.ssh?.process, process.isRunning {
-            process.terminate()
+        self.ssh?.terminateAll()
+        
+        for task in sshTasks {
+            task.cancel()
         }
+        sshTasks.removeAll()
+        
         refreshTask?.cancel()
         refreshTask = nil
         navigationGeneration += 1
-        NotificationCenter.default.removeObserver(self)
+        if let obs = settingsObserver {
+            NotificationCenter.default.removeObserver(obs)
+            settingsObserver = nil
+        }
         
         self.ssh = nil
         self.sftp = nil
@@ -125,28 +137,40 @@ class FileListViewModel: ObservableObject {
     func createFolder(name: String) async {
         guard let sftp = sftp else { return }
         let newPath = "\(currentPath)/\(name)"
+        var finalError: String?
         do {
             let id = try await sftp.addToQueue(type: "mkdir", src: nil, dst: newPath)
             try await sftp.waitForJob(id: id)
-            await refresh()
         } catch {
-            errorMessage = "フォルダ作成エラー: \(error.localizedDescription)"
+            finalError = "フォルダ作成エラー: \(error.localizedDescription)"
         }
+        if let err = finalError {
+            errorMessage = err
+        }
+        await refresh()
     }
     
     func deleteFiles(_ files: [RemoteFile]) async {
         guard let sftp = sftp else { return }
         var waitIds: [String] = []
+        var finalErrors: [String] = []
         for file in files {
             do {
                 let id = try await sftp.addToQueue(type: "delete", src: file.path, dst: nil)
                 waitIds.append(id)
             } catch {
-                errorMessage = "削除エラー (\(file.name)): \(error.localizedDescription)"
+                finalErrors.append("削除登録エラー (\(file.name)): \(error.localizedDescription)")
             }
         }
         for id in waitIds {
-            try? await sftp.waitForJob(id: id)
+            do {
+                try await sftp.waitForJob(id: id)
+            } catch {
+                finalErrors.append("削除エラー: \(error.localizedDescription)")
+            }
+        }
+        if !finalErrors.isEmpty {
+            errorMessage = finalErrors.joined(separator: "\n")
         }
         await refresh()
     }
@@ -154,29 +178,41 @@ class FileListViewModel: ObservableObject {
     func renameFile(_ file: RemoteFile, to newName: String) async {
         guard let sftp = sftp else { return }
         let newPath = "\(currentPath)/\(newName)"
+        var finalError: String?
         do {
             let id = try await sftp.addToQueue(type: "rename", src: file.path, dst: newPath)
             try await sftp.waitForJob(id: id)
-            await refresh()
         } catch {
-            errorMessage = "名前変更エラー: \(error.localizedDescription)"
+            finalError = "名前変更エラー: \(error.localizedDescription)"
         }
+        if let err = finalError {
+            errorMessage = err
+        }
+        await refresh()
     }
     
     func copyFiles(_ files: [RemoteFile], to destination: String) async {
         guard let sftp = sftp else { return }
         var waitIds: [String] = []
+        var finalErrors: [String] = []
         for file in files {
             let destPath = "\(destination)/\(file.name)"
             do {
                 let id = try await sftp.addToQueue(type: "copy", src: file.path, dst: destPath)
                 waitIds.append(id)
             } catch {
-                errorMessage = "コピーエラー (\(file.name)): \(error.localizedDescription)"
+                finalErrors.append("コピー登録エラー (\(file.name)): \(error.localizedDescription)")
             }
         }
         for id in waitIds {
-            try? await sftp.waitForJob(id: id, timeout: 30.0)
+            do {
+                try await sftp.waitForJob(id: id, timeout: 30.0)
+            } catch {
+                finalErrors.append("コピーエラー: \(error.localizedDescription)")
+            }
+        }
+        if !finalErrors.isEmpty {
+            errorMessage = finalErrors.joined(separator: "\n")
         }
         await refresh()
     }
@@ -184,30 +220,42 @@ class FileListViewModel: ObservableObject {
     func moveFiles(_ files: [RemoteFile], to destination: String) async {
         guard let sftp = sftp else { return }
         var waitIds: [String] = []
+        var finalErrors: [String] = []
         for file in files {
             let destPath = "\(destination)/\(file.name)"
             do {
                 let id = try await sftp.addToQueue(type: "move", src: file.path, dst: destPath)
                 waitIds.append(id)
             } catch {
-                errorMessage = "移動エラー (\(file.name)): \(error.localizedDescription)"
+                finalErrors.append("移動登録エラー (\(file.name)): \(error.localizedDescription)")
             }
         }
         for id in waitIds {
-            try? await sftp.waitForJob(id: id, timeout: 30.0)
+            do {
+                try await sftp.waitForJob(id: id, timeout: 30.0)
+            } catch {
+                finalErrors.append("移動エラー: \(error.localizedDescription)")
+            }
+        }
+        if !finalErrors.isEmpty {
+            errorMessage = finalErrors.joined(separator: "\n")
         }
         await refresh()
     }
     
     func changePermissions(_ file: RemoteFile, mode: String) async {
         guard let sftp = sftp else { return }
+        var finalError: String?
         do {
             let id = try await sftp.addToQueue(type: "chmod", src: nil, dst: file.path, mode: mode)
             try await sftp.waitForJob(id: id)
-            await refresh()
         } catch {
-            errorMessage = "権限変更エラー (\(file.name)): \(error.localizedDescription)"
+            finalError = "権限変更エラー (\(file.name)): \(error.localizedDescription)"
         }
+        if let err = finalError {
+            errorMessage = err
+        }
+        await refresh()
     }
     
     private func loadPath(_ path: String, updateHistory: Bool) async {
@@ -252,15 +300,22 @@ class FileListViewModel: ObservableObject {
         refreshTask?.cancel()
         guard refreshInterval > 0 else { return }
         
-        refreshTask = Task {
+        let startGeneration = navigationGeneration
+        refreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(refreshInterval * 1_000_000_000))
+                guard let self = self else { break }
+                try? await Task.sleep(nanoseconds: UInt64(self.refreshInterval * 1_000_000_000))
                 guard !Task.isCancelled else { break }
+                guard startGeneration == self.navigationGeneration else { break }
                 
                 // Background refresh without showing loading indicator
                 if let sftp = self.sftp {
-                    if let fileList = try? await sftp.listDirectory(path: self.currentPath) {
-                        let visibleFiles = self.showHiddenFiles ? fileList : fileList.filter { !$0.name.hasPrefix(".") }
+                    let currentPath = self.currentPath
+                    if let fileList = try? await sftp.listDirectory(path: currentPath) {
+                        guard !Task.isCancelled else { break }
+                        guard startGeneration == self.navigationGeneration else { break }
+                        let showHidden = self.showHiddenFiles
+                        let visibleFiles = showHidden ? fileList : fileList.filter { !$0.name.hasPrefix(".") }
                         self.files = visibleFiles.sorted { lhs, rhs in
                             if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
                             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending

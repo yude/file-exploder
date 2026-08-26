@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +12,12 @@ import (
 
 	"github.com/yude/file-exploder/server/internal/queue"
 )
+
+func randomTempFileName(prefix string) string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return prefix + "." + hex.EncodeToString(b) + ".tmp"
+}
 
 type Executor struct {
 	q queue.Queue
@@ -40,6 +48,11 @@ func (e *Executor) executeRename(job *queue.Job) error {
 	if err := validatePaths(job.SrcPath, job.DstPath); err != nil {
 		return err
 	}
+	// Same-path short-circuit
+	if filepath.Clean(job.SrcPath) == filepath.Clean(job.DstPath) {
+		return nil
+	}
+	
 	if _, err := os.Lstat(job.DstPath); err == nil {
 		return fmt.Errorf("destination path already exists: %s", job.DstPath)
 	}
@@ -74,12 +87,18 @@ func (e *Executor) executeMkdir(job *queue.Job) error {
 	if job.DstPath == "" {
 		return fmt.Errorf("destination path is required for mkdir")
 	}
+	if err := validatePaths(job.DstPath); err != nil {
+		return err
+	}
 	return os.MkdirAll(job.DstPath, 0755)
 }
 
 func (e *Executor) executeChmod(job *queue.Job) error {
 	if job.DstPath == "" {
 		return fmt.Errorf("destination path is required for chmod")
+	}
+	if err := validatePaths(job.DstPath); err != nil {
+		return err
 	}
 	if job.Mode == "" {
 		return fmt.Errorf("mode is required for chmod")
@@ -154,7 +173,7 @@ func copyFile(src, dst string) error {
 		return err
 	}
 
-	dstTmp := dst + ".tmp"
+	dstTmp := randomTempFileName(dst)
 	dstFile, err := os.OpenFile(dstTmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, srcInfo.Mode())
 	if err != nil {
 		return err
@@ -178,22 +197,86 @@ func copyFile(src, dst string) error {
 }
 
 func copyDir(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+	// First gather everything to copy to verify it won't fail midway (as best we can)
+	// and to ensure we don't pick up files we create during the copy
+	var entries []struct {
+		relPath string
+		info    os.FileInfo
+	}
+	
+	err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-
 		relPath, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
 		}
-		dstPath := filepath.Join(dst, relPath)
-
-		if info.IsDir() {
-			return os.MkdirAll(dstPath, info.Mode())
+		if relPath != "." { // skip the root dir itself
+			entries = append(entries, struct {
+				relPath string
+				info    os.FileInfo
+			}{relPath, info})
 		}
-		return copyFile(path, dstPath)
+		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	srcInfo, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	
+	// Refuse to merge directories. If the destination already exists, fail.
+	if _, err := os.Lstat(dst); err == nil {
+		return fmt.Errorf("destination already exists: %s", dst)
+	}
+
+	// Create root dst
+	if err := os.MkdirAll(dst, srcInfo.Mode()|0700); err != nil {
+		return err
+	}
+	
+	// Keep track of created dirs to revert on failure
+	var createdDirs []string
+	createdDirs = append(createdDirs, dst)
+	
+	defer func() {
+		if err != nil {
+			for i := len(createdDirs) - 1; i >= 0; i-- {
+				os.RemoveAll(createdDirs[i])
+			}
+		}
+	}()
+	
+	// Create all directories first
+	for _, entry := range entries {
+		if entry.info.IsDir() {
+			dstPath := filepath.Join(dst, entry.relPath)
+			if errMkdir := os.MkdirAll(dstPath, entry.info.Mode()|0700); errMkdir != nil {
+				err = errMkdir
+				return err
+			}
+			createdDirs = append(createdDirs, dstPath)
+		}
+	}
+
+	// Then copy files
+	for _, entry := range entries {
+		if !entry.info.IsDir() {
+			srcPath := filepath.Join(src, entry.relPath)
+			dstPath := filepath.Join(dst, entry.relPath)
+			if errCopy := copyFile(srcPath, dstPath); errCopy != nil {
+				err = errCopy
+				return err
+			}
+		}
+	}
+	
+	err = nil
+	return nil
 }
 
 func parseFileMode(s string) (os.FileMode, error) {

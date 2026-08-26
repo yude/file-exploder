@@ -18,28 +18,30 @@ struct BreadcrumbView: View {
     }
     
     var body: some View {
-        HStack(spacing: 4) {
-            // Root
-            Button(action: {
-                // UIからHomeを押した場合でも、navigateTo内部で境界チェックが行われる
-                onNavigate("/") 
-            }) {
-                Image(systemName: "house")
-            }
-            .buttonStyle(.borderless)
-            
-            ForEach(Array(pathComponents.enumerated()), id: \.offset) { index, component in
-                Image(systemName: "chevron.right")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                
-                Button(action: { onNavigate(component.1) }) {
-                    Text(component.0)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                // Root
+                Button(action: {
+                    // UIからHomeを押した場合でも、navigateTo内部で境界チェックが行われる
+                    onNavigate("/") 
+                }) {
+                    Image(systemName: "house")
                 }
                 .buttonStyle(.borderless)
+                
+                ForEach(Array(pathComponents.enumerated()), id: \.offset) { index, component in
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    
+                    Button(action: { onNavigate(component.1) }) {
+                        Text(component.0)
+                    }
+                    .buttonStyle(.borderless)
+                }
             }
+            .font(.callout)
         }
-        .font(.callout)
     }
 }
 

@@ -10,49 +10,75 @@ class SFTPService {
     
     /// List directory contents
     func listDirectory(path: String) async throws -> [RemoteFile] {
-        // Use find for robust parseable output: size|timestamp|octal_mode|type|name
-        // Name is last so maxSplits correctly captures filenames containing '|'
-        let command = "find \(path.shellEscaped) -maxdepth 1 -mindepth 1 -printf '%s|%Ts|%m|%y|%f\\n'"
+        // Use the new go server list command
+        let command = "PATH=$PATH:/usr/local/bin:~/.local/bin file-exploder list \(path.shellEscaped)"
         let output = try await ssh.executeCommand(command)
+        guard let data = output.data(using: .utf8) else {
+            throw QueueError.invalidResponse("Empty response")
+        }
+        let list = try parseJSON(data, type: [RemoteFileJSON].self)
         
-        return parseDirectoryListing(output, basePath: path)
+        return list.map { item in
+            let date = Date(timeIntervalSince1970: TimeInterval(item.modificationDate))
+            var perms = FilePermissions.from(octal: Int(item.permissions))
+            perms.isDirectory = item.isDirectory
+            return RemoteFile(
+                name: item.name,
+                path: item.path,
+                size: item.size,
+                modificationDate: date,
+                isDirectory: item.isDirectory,
+                permissions: perms
+            )
+        }
     }
     
     /// Get file info
     func getFileInfo(path: String) async throws -> RemoteFile {
-        let command = "find \(path.shellEscaped) -maxdepth 0 -printf '%s|%Ts|%m|%y|%f\\n'"
+        // Use the new go server stat command
+        let command = "PATH=$PATH:/usr/local/bin:~/.local/bin file-exploder stat \(path.shellEscaped)"
         let output = try await ssh.executeCommand(command)
-        guard let file = parseFindLine(output.trimmingCharacters(in: .whitespacesAndNewlines), basePath: (path as NSString).deletingLastPathComponent) else {
-            throw SSHError.invalidResponse
+        guard let data = output.data(using: .utf8) else {
+            throw QueueError.invalidResponse("Empty response")
         }
-        return file
+        let item = try parseJSON(data, type: RemoteFileJSON.self)
+        
+        let date = Date(timeIntervalSince1970: TimeInterval(item.modificationDate))
+        var perms = FilePermissions.from(octal: Int(item.permissions))
+        perms.isDirectory = item.isDirectory
+        return RemoteFile(
+            name: item.name,
+            path: item.path,
+            size: item.size,
+            modificationDate: date,
+            isDirectory: item.isDirectory,
+            permissions: perms
+        )
     }
     
     /// Create directory
     func createDirectory(path: String) async throws {
-        _ = try await ssh.executeCommand("mkdir -p \(path.shellEscaped)")
+        _ = try await addToQueue(type: "mkdir", src: nil, dst: path)
     }
     
     /// Delete file or directory
     func delete(path: String, recursive: Bool = false) async throws {
-        let flag = recursive ? "-rf" : "-f"
-        _ = try await ssh.executeCommand("rm \(flag) \(path.shellEscaped)")
+        _ = try await addToQueue(type: "delete", src: path, dst: nil)
     }
     
     /// Rename/move
     func rename(source: String, destination: String) async throws {
-        _ = try await ssh.executeCommand("mv \(source.shellEscaped) \(destination.shellEscaped)")
+        _ = try await addToQueue(type: "rename", src: source, dst: destination)
     }
     
     /// Copy
     func copy(source: String, destination: String, recursive: Bool = false) async throws {
-        let flag = recursive ? "-r" : ""
-        _ = try await ssh.executeCommand("cp \(flag) \(source.shellEscaped) \(destination.shellEscaped)")
+        _ = try await addToQueue(type: "copy", src: source, dst: destination)
     }
     
     /// Change permissions
     func chmod(path: String, mode: String) async throws {
-        _ = try await ssh.executeCommand("chmod \(mode) \(path.shellEscaped)")
+        _ = try await addToQueue(type: "chmod", src: nil, dst: path, mode: mode)
     }
     
     /// Add operation to server-side queue
@@ -129,47 +155,6 @@ class SFTPService {
     
     // MARK: - Private helpers
     
-    private func parseDirectoryListing(_ output: String, basePath: String) -> [RemoteFile] {
-        let lines = output.components(separatedBy: .newlines).filter { !$0.isEmpty }
-        var files: [RemoteFile] = []
-        
-        for line in lines {
-            guard let file = parseFindLine(line, basePath: basePath) else { continue }
-            files.append(file)
-        }
-        
-        return files
-    }
-    
-    private func parseFindLine(_ line: String, basePath: String) -> RemoteFile? {
-        let parts = line.split(separator: "|", maxSplits: 4)
-        guard parts.count >= 5 else { return nil }
-        
-        let size = Int64(parts[0]) ?? 0
-        let timestamp = TimeInterval(parts[1]) ?? 0
-        let mode = Int(parts[2], radix: 8) ?? 0
-        let type = String(parts[3])
-        let name = String(parts[4])
-        
-        // Skip . and .. just in case, though find -mindepth 1 prevents this
-        guard name != "." && name != ".." else { return nil }
-        
-        let isDirectory = (type == "d")
-        let date = Date(timeIntervalSince1970: timestamp)
-        let filePermissions = FilePermissions.from(octal: mode)
-        let filePath = "\(basePath)/\(name)".replacingOccurrences(of: "//", with: "/")
-        
-        return RemoteFile(
-            name: name,
-            path: filePath,
-            size: size,
-            modificationDate: date,
-            isDirectory: isDirectory,
-            permissions: filePermissions
-        )
-    }
-    
-
     private func parseJSON<T: Decodable>(_ data: Data, type: T.Type) throws -> T {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -189,6 +174,15 @@ class SFTPService {
 struct QueueResponse: Codable {
     let total: Int
     let jobs: [QueueJob]?
+}
+
+struct RemoteFileJSON: Codable {
+    let name: String
+    let path: String
+    let size: Int64
+    let modificationDate: Int64
+    let isDirectory: Bool
+    let permissions: UInt32
 }
 
 enum QueueError: LocalizedError {

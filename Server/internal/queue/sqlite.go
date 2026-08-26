@@ -128,15 +128,23 @@ func (q *SQLiteQueue) GetAllJobs() ([]*Job, error) {
 }
 
 func (q *SQLiteQueue) CancelJob(id string) error {
-	result, err := q.db.Exec(`UPDATE jobs SET status='cancelled' WHERE id=? AND status IN ('pending', 'running')`, id)
+	// First update the status if pending
+	result, err := q.db.Exec(`UPDATE jobs SET status='cancelled' WHERE id=? AND status = 'pending'`, id)
 	if err != nil {
 		return err
 	}
 	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return fmt.Errorf("job %s not found or not cancellable (must be pending or running)", id)
+	if rows > 0 {
+		return nil // Successfully cancelled pending job
 	}
-	return nil
+
+	// For running jobs, we cannot safely cancel via DB update alone because the 
+	// executor process is already acting on files (os.Rename, os.MkdirAll, io.Copy etc).
+	// Writing 'cancelled' to the DB while it's running will just result in the executor
+	// overwriting it with 'completed' or 'failed' moments later.
+	// Actual cancellation of running operations requires context.Context threading through
+	// the executor, which is not currently implemented.
+	return fmt.Errorf("job %s not found or is already running/finished (running jobs cannot be interrupted)", id)
 }
 
 func (q *SQLiteQueue) GetRecentLogs(limit int) ([]*Job, error) {

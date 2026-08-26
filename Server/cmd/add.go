@@ -38,7 +38,7 @@ func init() {
 func runAdd(cmd *cobra.Command, args []string) error {
 	// Validate job type
 	validTypes := map[string]bool{
-		"rename": true, "move": true, "delete": true,
+		"rename": true, "move": true, "delete": true, 
 		"copy": true, "mkdir": true, "chmod": true,
 	}
 	if !validTypes[addType] {
@@ -65,11 +65,12 @@ func runAdd(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("invalid mode format: %s", addMode)
 		}
 	}
+
 	cfg := config.DefaultConfig()
 	if err := cfg.EnsureDirs(); err != nil {
 		return err
 	}
-
+	
 	q, err := queue.NewSQLiteQueue(cfg.DBPath)
 	if err != nil {
 		return err
