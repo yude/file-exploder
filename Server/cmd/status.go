@@ -23,6 +23,10 @@ func init() {
 
 func runStatus(cmd *cobra.Command, args []string) error {
 	cfg := config.DefaultConfig()
+	if err := cfg.EnsureDirs(); err != nil {
+		return err
+	}
+	
 	q, err := queue.NewSQLiteQueue(cfg.DBPath)
 	if err != nil {
 		return err
@@ -34,10 +38,11 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("job not found: %s", args[0])
 		}
-		return printJSON(job)
+		enc := json.NewEncoder(os.Stdout)
+		return enc.Encode(job)
 	}
 
-	jobs, err := q.GetAllJobs()
+	jobs, err := q.GetPendingJobs()
 	if err != nil {
 		return err
 	}
@@ -46,11 +51,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		"total": len(jobs),
 		"jobs":  jobs,
 	}
-	return printJSON(output)
-}
-
-func printJSON(v interface{}) error {
 	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
+	return enc.Encode(output)
 }

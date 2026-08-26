@@ -151,7 +151,7 @@ struct QueueJobRow: View {
                     .foregroundColor(.secondary)
             }
             
-            if job.status == .pending {
+            if job.status == .pending || job.status == .running {
                 Button("キャンセル") {
                     Task {
                         if let sftp = sftp {

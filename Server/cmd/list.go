@@ -1,15 +1,27 @@
 package cmd
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+
 	"github.com/spf13/cobra"
-	"github.com/yude/file-exploder/server/internal/config"
-	"github.com/yude/file-exploder/server/internal/queue"
 )
+
+type FileInfo struct {
+	Name             string `json:"name"`
+	Path             string `json:"path"`
+	Size             int64  `json:"size"`
+	ModificationDate int64  `json:"modificationDate"`
+	IsDirectory      bool   `json:"isDirectory"`
+	Permissions      uint32 `json:"permissions"`
+}
 
 var listCmd = &cobra.Command{
 	Use:   "list [path]",
-	Short: "List directory contents (for UI integration)",
-	Args:  cobra.MaximumNArgs(1),
+	Short: "List directory contents safely as JSON",
+	Args:  cobra.ExactArgs(1),
 	RunE:  runList,
 }
 
@@ -18,26 +30,29 @@ func init() {
 }
 
 func runList(cmd *cobra.Command, args []string) error {
-	cfg := config.DefaultConfig()
-	q, err := queue.NewSQLiteQueue(cfg.DBPath)
+	target := args[0]
+	entries, err := os.ReadDir(target)
 	if err != nil {
 		return err
 	}
-	defer q.Close()
 
-	_ = q
-
-	// This is a placeholder - the actual directory listing
-	// is done via SFTP on the client side.
-	// This command exists for future server-side listing needs.
-	path := "."
-	if len(args) > 0 {
-		path = args[0]
+	var results []FileInfo
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue // Skip files we can't stat
+		}
+		
+		results = append(results, FileInfo{
+			Name:             entry.Name(),
+			Path:             filepath.Join(target, entry.Name()),
+			Size:             info.Size(),
+			ModificationDate: info.ModTime().Unix(),
+			IsDirectory:      entry.IsDir(),
+			Permissions:      uint32(info.Mode() & os.ModePerm),
+		})
 	}
 
-	return printJSON(map[string]string{
-		"path":    path,
-		"note":    "Directory listing is handled via SFTP on the client side",
-		"version": "1.0.0",
-	})
+	enc := json.NewEncoder(os.Stdout)
+	return enc.Encode(results)
 }

@@ -35,6 +35,10 @@ class FileListViewModel: ObservableObject {
     }
     
     func disconnect() {
+        // 現在実行中のプロセスがあればキャンセルする
+        if let process = self.ssh?.process, process.isRunning {
+            process.terminate()
+        }
         self.ssh = nil
         self.sftp = nil
         self.files = []
@@ -46,57 +50,50 @@ class FileListViewModel: ObservableObject {
     }
     
     func navigateTo(path: String) async {
-        guard let sftp = sftp else { return }
-        
-        isLoading = true
-        errorMessage = nil
-        
-        do {
-            let fileList = try await sftp.listDirectory(path: path)
-            
-            // Update history
-            if pathHistoryIndex < pathHistory.count - 1 {
-                pathHistory = Array(pathHistory.prefix(pathHistoryIndex + 1))
+        // 接続サーバーのルートより上には行けないようにする
+        if let serverRoot = ssh?.server.remoteRoot {
+            let rootPath = (serverRoot as NSString).standardizingPath
+            let targetPath = (path as NSString).standardizingPath
+            if !targetPath.hasPrefix(rootPath) && targetPath != rootPath {
+                return
             }
-            pathHistory.append(path)
-            pathHistoryIndex = pathHistory.count - 1
-            
-            currentPath = path
-            files = fileList.sorted { lhs, rhs in
-                // Directories first, then by name
-                if lhs.isDirectory != rhs.isDirectory {
-                    return lhs.isDirectory
-                }
-                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-            }
-        } catch {
-            errorMessage = error.localizedDescription
         }
         
-        isLoading = false
+        await loadPath(path, updateHistory: true)
     }
     
     func goBack() async {
         guard canGoBack else { return }
         pathHistoryIndex -= 1
         let path = pathHistory[pathHistoryIndex]
-        await loadPath(path)
+        await loadPath(path, updateHistory: false)
     }
     
     func goForward() async {
         guard canGoForward else { return }
         pathHistoryIndex += 1
         let path = pathHistory[pathHistoryIndex]
-        await loadPath(path)
+        await loadPath(path, updateHistory: false)
     }
     
     func goToParent() async {
         let parent = (currentPath as NSString).deletingLastPathComponent
+        guard parent != currentPath else { return }
+        
+        // 接続サーバーのルートより上には行けないようにする
+        if let serverRoot = ssh?.server.remoteRoot {
+            let rootPath = (serverRoot as NSString).standardizingPath
+            let targetPath = (parent as NSString).standardizingPath
+            if !targetPath.hasPrefix(rootPath) && targetPath != rootPath {
+                return
+            }
+        }
+        
         await navigateTo(path: parent)
     }
     
     func refresh() async {
-        await loadPath(currentPath)
+        await loadPath(currentPath, updateHistory: false)
     }
     
     func openFile(_ file: RemoteFile) async {
@@ -193,13 +190,22 @@ class FileListViewModel: ObservableObject {
         }
     }
     
-    private func loadPath(_ path: String) async {
+    private func loadPath(_ path: String, updateHistory: Bool) async {
         guard let sftp = sftp else { return }
         
         isLoading = true
         errorMessage = nil
         do {
             let fileList = try await sftp.listDirectory(path: path)
+            
+            if updateHistory {
+                if pathHistoryIndex < pathHistory.count - 1 {
+                    pathHistory = Array(pathHistory.prefix(pathHistoryIndex + 1))
+                }
+                pathHistory.append(path)
+                pathHistoryIndex = pathHistory.count - 1
+            }
+            
             currentPath = path
             files = fileList.sorted { lhs, rhs in
                 if lhs.isDirectory != rhs.isDirectory {

@@ -1,7 +1,7 @@
 import Foundation
 
 struct RemoteFile: Identifiable, Hashable {
-    let id = UUID()
+    var id: String { path }
     let name: String
     let path: String
     let size: Int64
@@ -54,11 +54,11 @@ struct FilePermissions: Hashable {
         return "\(owner)\(group)\(other)"
     }
     
-    var symbolicString: String {
+    func symbolicString(isDirectory: Bool) -> String {
         func triad(_ r: Bool, _ w: Bool, _ x: Bool) -> String {
             (r ? "r" : "-") + (w ? "w" : "-") + (x ? "x" : "-")
         }
-        return "d" + triad(ownerRead, ownerWrite, ownerExecute)
+        return (isDirectory ? "d" : "-") + triad(ownerRead, ownerWrite, ownerExecute)
             + triad(groupRead, groupWrite, groupExecute)
             + triad(otherRead, otherWrite, otherExecute)
     }

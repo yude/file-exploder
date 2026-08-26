@@ -80,18 +80,23 @@ func processPendingJobs(q queue.Queue, exec *executor.Executor, logger *log.Logg
 	for _, job := range jobs {
 		logger.Printf("Processing job %s (%s): %s -> %s", job.ID, job.Type, job.SrcPath, job.DstPath)
 
-		if err := q.UpdateStatus(job.ID, queue.StatusRunning, ""); err != nil {
+		started, err := q.StartJob(job.ID)
+		if err != nil {
 			logger.Printf("Error updating job %s status: %v", job.ID, err)
+			continue
+		}
+		if !started {
+			logger.Printf("Job %s is no longer pending", job.ID)
 			continue
 		}
 
 		if err := exec.Execute(job); err != nil {
 			logger.Printf("Job %s failed: %v", job.ID, err)
-			q.UpdateStatus(job.ID, queue.StatusFailed, err.Error())
+			_ = q.UpdateStatus(job.ID, queue.StatusFailed, err.Error())
 			continue
 		}
 
 		logger.Printf("Job %s completed", job.ID)
-		q.UpdateStatus(job.ID, queue.StatusCompleted, "")
+		_ = q.UpdateStatus(job.ID, queue.StatusCompleted, "")
 	}
 }

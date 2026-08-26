@@ -21,6 +21,10 @@ func init() {
 
 func runCancel(cmd *cobra.Command, args []string) error {
 	cfg := config.DefaultConfig()
+	if err := cfg.EnsureDirs(); err != nil {
+		return err
+	}
+	
 	q, err := queue.NewSQLiteQueue(cfg.DBPath)
 	if err != nil {
 		return err

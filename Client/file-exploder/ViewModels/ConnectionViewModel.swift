@@ -15,16 +15,22 @@ class ConnectionViewModel: ObservableObject {
     }
     
     func loadServers() {
-        guard let data = UserDefaults.standard.data(forKey: serversKey),
-              let decoded = try? JSONDecoder().decode([Server].self, from: data) else {
+        guard let data = UserDefaults.standard.data(forKey: serversKey) else {
             return
         }
-        servers = decoded
+        do {
+            servers = try JSONDecoder().decode([Server].self, from: data)
+        } catch {
+            print("Failed to decode saved servers: \(error)")
+        }
     }
     
     func saveServers() {
-        if let data = try? JSONEncoder().encode(servers) {
+        do {
+            let data = try JSONEncoder().encode(servers)
             UserDefaults.standard.set(data, forKey: serversKey)
+        } catch {
+            print("Failed to encode servers: \(error)")
         }
     }
     

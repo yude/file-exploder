@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/yude/file-exploder/server/internal/queue"
@@ -43,12 +44,18 @@ func (e *Executor) executeRename(job *queue.Job) error {
 	if err := validatePaths(job.SrcPath, job.DstPath); err != nil {
 		return err
 	}
+	if _, err := os.Lstat(job.DstPath); err == nil {
+		return fmt.Errorf("destination path already exists: %s", job.DstPath)
+	}
 	return os.Rename(job.SrcPath, job.DstPath)
 }
 
 func (e *Executor) executeDelete(job *queue.Job) error {
 	if job.SrcPath == "" {
 		return fmt.Errorf("source path is required for delete")
+	}
+	if err := validatePaths(job.SrcPath); err != nil {
+		return err
 	}
 	info, err := os.Lstat(job.SrcPath)
 	if err != nil {
@@ -111,12 +118,24 @@ func validatePaths(paths ...string) error {
 		if cleaned == "." || cleaned == "/" {
 			return fmt.Errorf("path cannot be root or current directory: %s", p)
 		}
+		if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+			return fmt.Errorf("path cannot contain relative parent references: %s", p)
+		}
 	}
 	return nil
 }
 
 func copyPath(src, dst string) error {
-	info, err := os.Stat(src)
+	cleanedSrc := filepath.Clean(src)
+	cleanedDst := filepath.Clean(dst)
+	if cleanedSrc == cleanedDst {
+		return fmt.Errorf("source and destination are the same path")
+	}
+	if strings.HasPrefix(cleanedDst, cleanedSrc+string(filepath.Separator)) {
+		return fmt.Errorf("cannot copy a directory into itself")
+	}
+
+	info, err := os.Lstat(src)
 	if err != nil {
 		return err
 	}
@@ -127,6 +146,22 @@ func copyPath(src, dst string) error {
 }
 
 func copyFile(src, dst string) error {
+	srcInfo, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+
+	if srcInfo.Mode()&os.ModeSymlink != 0 {
+		link, err := os.Readlink(src)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Lstat(dst); err == nil {
+			return fmt.Errorf("destination already exists: %s", dst)
+		}
+		return os.Symlink(link, dst)
+	}
+
 	srcFile, err := os.Open(src)
 	if err != nil {
 		return err
@@ -137,21 +172,27 @@ func copyFile(src, dst string) error {
 		return err
 	}
 
-	dstFile, err := os.Create(dst)
+	dstTmp := dst + ".tmp"
+	dstFile, err := os.OpenFile(dstTmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, srcInfo.Mode())
 	if err != nil {
 		return err
 	}
-	defer dstFile.Close()
+	defer func() {
+		dstFile.Close()
+		os.Remove(dstTmp) // Clean up temp file if rename fails or panic
+	}()
 
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
 		return err
 	}
 
-	srcInfo, err := os.Stat(src)
-	if err != nil {
-		return err
+	dstFile.Close() // Explicitly close before rename
+	
+	if _, err := os.Lstat(dst); err == nil {
+		return fmt.Errorf("destination already exists: %s", dst)
 	}
-	return os.Chmod(dst, srcInfo.Mode())
+
+	return os.Rename(dstTmp, dst)
 }
 
 func copyDir(src, dst string) error {
@@ -175,8 +216,10 @@ func copyDir(src, dst string) error {
 
 func parseFileMode(s string) (os.FileMode, error) {
 	s = strings.TrimPrefix(s, "0")
-	var mode uint32
-	_, err := fmt.Sscanf(s, "%o", &mode)
+	if len(s) == 0 || len(s) > 4 {
+		return 0, fmt.Errorf("invalid file mode length: %s", s)
+	}
+	mode, err := strconv.ParseUint(s, 8, 32)
 	if err != nil {
 		return 0, fmt.Errorf("invalid file mode: %s", s)
 	}

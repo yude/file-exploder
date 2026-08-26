@@ -11,7 +11,6 @@ struct Server: Identifiable, Codable, Hashable {
     var remoteRoot: String
     
     enum AuthType: String, Codable, CaseIterable {
-        case password = "パスワード"
         case sshKey = "SSHキー"
     }
     

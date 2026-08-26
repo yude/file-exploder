@@ -22,5 +22,5 @@ func DefaultConfig() *Config {
 }
 
 func (c *Config) EnsureDirs() error {
-	return os.MkdirAll(c.DataDir, 0755)
+	return os.MkdirAll(c.DataDir, 0700)
 }

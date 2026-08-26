@@ -1,6 +1,10 @@
 package cmd
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+
 	"github.com/spf13/cobra"
 	"github.com/yude/file-exploder/server/internal/config"
 	"github.com/yude/file-exploder/server/internal/queue"
@@ -22,7 +26,15 @@ func init() {
 }
 
 func runLog(cmd *cobra.Command, args []string) error {
+	if logLimit <= 0 {
+		return fmt.Errorf("limit must be greater than 0")
+	}
+
 	cfg := config.DefaultConfig()
+	if err := cfg.EnsureDirs(); err != nil {
+		return err
+	}
+
 	q, err := queue.NewSQLiteQueue(cfg.DBPath)
 	if err != nil {
 		return err
@@ -34,5 +46,6 @@ func runLog(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return printJSON(jobs)
+	enc := json.NewEncoder(os.Stdout)
+	return enc.Encode(jobs)
 }

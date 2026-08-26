@@ -7,8 +7,8 @@ class SSHConnection: ObservableObject {
     @Published var isConnected = false
     @Published var connectionError: String?
     
-    private let server: Server
-    private var session: Process?
+    let server: Server
+    var process: Process? // Public access for disconnection
     
     init(server: Server) {
         self.server = server
@@ -27,6 +27,8 @@ class SSHConnection: ObservableObject {
                 process.arguments = buildSSHArguments(command: command)
                 process.standardOutput = pipe
                 process.standardError = errorPipe
+                
+                self.process = process // Store reference
                 
                 let outputData = SendableData()
                 let errorData = SendableData()

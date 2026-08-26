@@ -81,7 +81,7 @@ struct ConnectionSheet: View {
                     save()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(name.isEmpty || hostname.isEmpty || username.isEmpty)
+                .disabled(name.isEmpty || hostname.isEmpty || username.isEmpty || UInt16(port) == nil)
             }
             .padding()
         }
@@ -97,6 +97,13 @@ struct ConnectionSheet: View {
                 remoteRoot = server.remoteRoot
             }
         }
+        .onChange(of: port) {
+            // Filter non-numeric characters for port
+            let filtered = port.filter { "0123456789".contains($0) }
+            if filtered != port {
+                port = filtered
+            }
+        }
         .fileImporter(
             isPresented: $showKeyPicker,
             allowedContentTypes: [],
@@ -109,25 +116,27 @@ struct ConnectionSheet: View {
     }
     
     private func save() {
-        let newServer = Server(
-            name: name,
-            hostname: hostname,
-            port: UInt16(port) ?? 22,
-            username: username,
-            authType: authType,
-            keyPath: authType == .sshKey ? keyPath : nil,
-            remoteRoot: remoteRoot
-        )
-        
-        if let existing = server {
-            var updated = newServer
-            updated.id = existing.id
-            connectionVM.updateServer(updated)
-        } else {
-            connectionVM.addServer(newServer)
+        if let portInt = UInt16(port) {
+            let newServer = Server(
+                name: name,
+                hostname: hostname,
+                port: portInt,
+                username: username,
+                authType: authType,
+                keyPath: authType == .sshKey ? keyPath : nil,
+                remoteRoot: remoteRoot
+            )
+            
+            if let existing = server {
+                var updated = newServer
+                updated.id = existing.id
+                connectionVM.updateServer(updated)
+            } else {
+                connectionVM.addServer(newServer)
+            }
+            
+            dismiss()
         }
-        
-        dismiss()
     }
 }
 

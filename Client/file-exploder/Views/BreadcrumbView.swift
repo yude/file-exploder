@@ -20,7 +20,10 @@ struct BreadcrumbView: View {
     var body: some View {
         HStack(spacing: 4) {
             // Root
-            Button(action: { onNavigate("/") }) {
+            Button(action: {
+                // UIからHomeを押した場合でも、navigateTo内部で境界チェックが行われる
+                onNavigate("/") 
+            }) {
                 Image(systemName: "house")
             }
             .buttonStyle(.borderless)

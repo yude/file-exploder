@@ -19,10 +19,12 @@ func NewSQLiteQueue(dbPath string) (*SQLiteQueue, error) {
 	}
 
 	if err := db.Ping(); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
 	if err := migrate(db); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
 
@@ -82,6 +84,16 @@ func (q *SQLiteQueue) GetJob(id string) (*Job, error) {
 	return job, nil
 }
 
+func (q *SQLiteQueue) StartJob(id string) (bool, error) {
+	now := time.Now()
+	result, err := q.db.Exec(`UPDATE jobs SET status='running', started_at=?, error='' WHERE id=? AND status='pending'`, now, id)
+	if err != nil {
+		return false, err
+	}
+	rows, _ := result.RowsAffected()
+	return rows > 0, nil
+}
+
 func (q *SQLiteQueue) UpdateStatus(id string, status JobStatus, errMsg string) error {
 	now := time.Now()
 	switch status {
@@ -102,11 +114,11 @@ func (q *SQLiteQueue) UpdateStatus(id string, status JobStatus, errMsg string) e
 
 func (q *SQLiteQueue) GetPendingJobs() ([]*Job, error) {
 	return q.queryJobs(`SELECT id, type, src_path, dst_path, mode, status, error, created_at, started_at, completed_at
-		FROM jobs WHERE status = 'pending' ORDER BY created_at ASC`)
+		FROM jobs WHERE status IN ('pending', 'running') ORDER BY created_at ASC`)
 }
 
 func (q *SQLiteQueue) ResetRunningJobs() error {
-	_, err := q.db.Exec(`UPDATE jobs SET status = 'pending', error = 'reset after daemon restart' WHERE status = 'running'`)
+	_, err := q.db.Exec(`UPDATE jobs SET status = 'failed', error = 'Daemon crashed before completion' WHERE status = 'running'`)
 	return err
 }
 
@@ -116,18 +128,21 @@ func (q *SQLiteQueue) GetAllJobs() ([]*Job, error) {
 }
 
 func (q *SQLiteQueue) CancelJob(id string) error {
-	result, err := q.db.Exec(`UPDATE jobs SET status='cancelled' WHERE id=? AND status = 'pending'`, id)
+	result, err := q.db.Exec(`UPDATE jobs SET status='cancelled' WHERE id=? AND status IN ('pending', 'running')`, id)
 	if err != nil {
 		return err
 	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		return fmt.Errorf("job %s not found or not cancellable (must be pending)", id)
+		return fmt.Errorf("job %s not found or not cancellable (must be pending or running)", id)
 	}
 	return nil
 }
 
 func (q *SQLiteQueue) GetRecentLogs(limit int) ([]*Job, error) {
+	if limit <= 0 {
+		limit = 50
+	}
 	return q.queryJobs(fmt.Sprintf(`SELECT id, type, src_path, dst_path, mode, status, error, created_at, started_at, completed_at
 		FROM jobs ORDER BY completed_at DESC, created_at DESC LIMIT %d`, limit))
 }
@@ -158,6 +173,9 @@ func (q *SQLiteQueue) queryJobs(query string, args ...interface{}) ([]*Job, erro
 			job.CompletedAt = &completedAt.Time
 		}
 		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return jobs, nil
 }

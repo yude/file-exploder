@@ -2,7 +2,7 @@ import SwiftUI
 
 struct FileListView: View {
     @ObservedObject var viewModel: FileListViewModel
-    @State private var selectedFiles: Set<UUID> = []
+    @State private var selectedFiles: Set<String> = []
     @State private var sortOrder = [KeyPathComparator(\RemoteFile.name)]
     @State private var searchText = ""
     @State private var showNewFolderSheet = false
@@ -11,6 +11,9 @@ struct FileListView: View {
     @State private var renameText = ""
     @State private var movingFile: RemoteFile?
     @State private var moveDestinationText = ""
+    
+    @State private var showingDeleteConfirmation = false
+    @State private var filesToDelete: [RemoteFile] = []
     
     var filteredFiles: [RemoteFile] {
         if searchText.isEmpty {
@@ -65,7 +68,7 @@ struct FileListView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Table(filteredFiles, selection: $selectedFiles, sortOrder: $sortOrder) {
+                Table(filteredFiles.sorted(using: sortOrder), selection: $selectedFiles, sortOrder: $sortOrder) {
                     TableColumn("名前", value: \.name) { file in
                         HStack(spacing: 8) {
                             Image(systemName: file.isDirectory ? "folder.fill" : fileIcon(for: file))
@@ -96,7 +99,7 @@ struct FileListView: View {
                     }
                     .width(min: 80, ideal: 100)
                 }
-                .contextMenu(forSelectionType: UUID.self) { selection in
+                .contextMenu(forSelectionType: String.self) { selection in
                     if let fileId = selection.first,
                        let file = filteredFiles.first(where: { $0.id == fileId }) {
                         fileContextMenu(file: file)
@@ -135,6 +138,28 @@ struct FileListView: View {
                     moveDestinationText = ""
                     movingFile = nil
                 }
+            }
+        }
+        .confirmationDialog(
+            "本当に削除しますか？",
+            isPresented: $showingDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("削除", role: .destructive) {
+                let toDelete = filesToDelete
+                Task {
+                    await viewModel.deleteFiles(toDelete)
+                    filesToDelete = []
+                }
+            }
+            Button("キャンセル", role: .cancel) {
+                filesToDelete = []
+            }
+        } message: {
+            if filesToDelete.count == 1 {
+                Text("\(filesToDelete[0].name) を完全に削除します。元に戻せません。")
+            } else {
+                Text("\(filesToDelete.count) 項目を完全に削除します。元に戻せません。")
             }
         }
     }
@@ -214,7 +239,16 @@ struct FileListView: View {
             }
             
             Button("コピー") {
-                // TODO: Implement copy to pasteboard
+                let toCopy = filteredFiles.filter { selectedFiles.contains($0.id) }
+                if toCopy.isEmpty, let file = filteredFiles.first(where: { $0.id == file.id }) { // Fallback if right-clicked without selection
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.setString(file.path, forType: .string)
+                } else if !toCopy.isEmpty {
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.writeObjects(toCopy.map { $0.path as NSString })
+                }
             }
             
             Divider()
@@ -230,7 +264,8 @@ struct FileListView: View {
             Divider()
             
             Button("削除", role: .destructive) {
-                Task { await viewModel.deleteFiles([file]) }
+                filesToDelete = [file]
+                showingDeleteConfirmation = true
             }
         }
     }
@@ -267,6 +302,7 @@ struct FileListView: View {
 struct NewFolderSheet: View {
     @Binding var name: String
     let onCreate: () -> Void
+    @Environment(\.dismiss) private var dismiss
     
     var body: some View {
         VStack(spacing: 16) {
@@ -281,7 +317,7 @@ struct NewFolderSheet: View {
                 Spacer()
                 Button("キャンセル") {
                     name = ""
-                    // Dismiss
+                    dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
                 
@@ -300,6 +336,7 @@ struct NewFolderSheet: View {
 struct RenameSheet: View {
     @Binding var name: String
     let onRename: () -> Void
+    @Environment(\.dismiss) private var dismiss
     
     var body: some View {
         VStack(spacing: 16) {
@@ -314,7 +351,7 @@ struct RenameSheet: View {
                 Spacer()
                 Button("キャンセル") {
                     name = ""
-                    // Dismiss
+                    dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
                 
@@ -333,6 +370,7 @@ struct RenameSheet: View {
 struct MoveSheet: View {
     @Binding var destination: String
     let onMove: () -> Void
+    @Environment(\.dismiss) private var dismiss
     
     var body: some View {
         VStack(spacing: 16) {
@@ -347,7 +385,7 @@ struct MoveSheet: View {
                 Spacer()
                 Button("キャンセル") {
                     destination = ""
-                    // Dismiss
+                    dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
                 

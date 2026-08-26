@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"fmt"
+	"encoding/json"
 	"os"
 	"time"
 
@@ -46,7 +46,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	defer q.Close()
 
 	job := &queue.Job{
-		ID:        uuid.New().String()[:8],
+		ID:        uuid.New().String(),
 		Type:      queue.JobType(addType),
 		SrcPath:   addSrc,
 		DstPath:   addDst,
@@ -59,6 +59,9 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stdout, `{"id":"%s","status":"pending"}%s`, job.ID, "\n")
-	return nil
+	enc := json.NewEncoder(os.Stdout)
+	return enc.Encode(map[string]string{
+		"id":     job.ID,
+		"status": "pending",
+	})
 }
