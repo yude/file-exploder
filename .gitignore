@@ -1,0 +1,47 @@
+# Binaries
+file-exploder
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output
+*.out
+
+# Go
+vendor/
+
+# Swift
+.build/
+.swiftpm/
+*.xcodeproj/xcuserdata/
+DerivedData/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+nohup.out
+
+# Queue data
+.file-exploder/
