@@ -86,3 +86,54 @@ final class ErrorLogTests: XCTestCase {
         XCTAssertNil(log.message)
     }
 }
+
+final class QueueJobClipboardLogTests: XCTestCase {
+    func testIncludesAllUsefulJobDetails() {
+        let job = QueueJob(
+            id: "job-123",
+            type: .copy,
+            srcPath: "/srv/source.txt",
+            dstPath: "/srv/destination.txt",
+            mode: nil,
+            status: .failed,
+            error: "permission denied",
+            createdAt: Date(timeIntervalSince1970: 0),
+            startedAt: Date(timeIntervalSince1970: 1),
+            completedAt: Date(timeIntervalSince1970: 2)
+        )
+
+        XCTAssertEqual(
+            job.clipboardLog,
+            """
+            ID: job-123
+            操作: コピー
+            状態: 失敗
+            内容: コピー /srv/source.txt -> /srv/destination.txt
+            作成日時: 1970-01-01T00:00:00Z
+            開始日時: 1970-01-01T00:00:01Z
+            完了日時: 1970-01-01T00:00:02Z
+            エラー: permission denied
+            """
+        )
+    }
+
+    func testOmitsUnavailableOptionalDetails() {
+        let job = QueueJob(
+            id: "job-456",
+            type: .mkdir,
+            srcPath: nil,
+            dstPath: "/srv/new-directory",
+            mode: nil,
+            status: .pending,
+            error: nil,
+            createdAt: Date(timeIntervalSince1970: 0),
+            startedAt: nil,
+            completedAt: nil
+        )
+
+        XCTAssertFalse(job.clipboardLog.contains("開始日時:"))
+        XCTAssertFalse(job.clipboardLog.contains("完了日時:"))
+        XCTAssertFalse(job.clipboardLog.contains("エラー:"))
+        XCTAssertTrue(job.clipboardLog.contains("内容: 作成 /srv/new-directory"))
+    }
+}

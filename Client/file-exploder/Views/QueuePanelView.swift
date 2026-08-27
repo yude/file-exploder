@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 struct QueuePanelView: View {
     @State private var activeJobs: [QueueJob] = []
@@ -21,6 +24,14 @@ struct QueuePanelView: View {
                 Text("ジョブ")
                     .font(.headline)
                 Spacer()
+                if selectedTab == 1 && !logJobs.isEmpty {
+                    Button(action: copyAllLogs) {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("履歴をすべてコピー")
+                    .accessibilityLabel("履歴をすべてコピー")
+                }
                 Button(action: {
                     actionError = nil
                     Task { await refresh() }
@@ -93,6 +104,13 @@ struct QueuePanelView: View {
                     }, onError: { message in
                         actionError = message
                     })
+                    .contextMenu {
+                        if selectedTab == 1 {
+                            Button("ログをコピー") {
+                                copyToPasteboard(job.clipboardLog)
+                            }
+                        }
+                    }
                 }
                 .listStyle(.plain)
             }
@@ -119,6 +137,18 @@ struct QueuePanelView: View {
 
     private var refreshTaskID: RefreshTaskID {
         RefreshTaskID(tab: selectedTab, service: sftp.map { ObjectIdentifier($0) })
+    }
+
+    private func copyAllLogs() {
+        copyToPasteboard(logJobs.map(\.clipboardLog).joined(separator: "\n\n---\n\n"))
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        #if os(macOS)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        #endif
     }
     
     func refresh() async {

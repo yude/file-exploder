@@ -92,4 +92,36 @@ struct QueueJob: Identifiable, Codable {
             return "権限変更 \(dstPath ?? "") to \(mode ?? "")"
         }
     }
+
+    /// A stable, self-contained representation suitable for pasting into an
+    /// issue or a support message. Unlike the compact row, this deliberately
+    /// includes the job ID and every available timestamp.
+    var clipboardLog: String {
+        var lines = [
+            "ID: \(id)",
+            "操作: \(type.displayName)",
+            "状態: \(status.displayName)",
+            "内容: \(description)",
+            "作成日時: \(Self.logDateFormatter.string(from: createdAt))"
+        ]
+
+        if let startedAt {
+            lines.append("開始日時: \(Self.logDateFormatter.string(from: startedAt))")
+        }
+        if let completedAt {
+            lines.append("完了日時: \(Self.logDateFormatter.string(from: completedAt))")
+        }
+        if let error, !error.isEmpty {
+            lines.append("エラー: \(error)")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private static let logDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
+    }()
 }
