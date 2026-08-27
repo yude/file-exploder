@@ -157,6 +157,8 @@ final class QueueJobClipboardLogTests: XCTestCase {
         XCTAssertFalse(job.clipboardLog.contains("完了日時:"))
         XCTAssertFalse(job.clipboardLog.contains("エラー:"))
         XCTAssertTrue(job.clipboardLog.contains("内容: 作成 /srv/new-directory"))
+    }
+}
 
 final class RemoteFileIdentityTests: XCTestCase {
     private func file(named name: String, in directory: String = "/srv") -> RemoteFile {
