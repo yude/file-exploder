@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -35,8 +37,14 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	if len(args) == 1 {
 		job, err := q.GetJob(args[0])
-		if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("job not found: %s", args[0])
+		}
+		if err != nil {
+			// Anything else is a database problem, and the client polls this
+			// while waiting for a job: reporting it as "not found" would make a
+			// transient failure look like the job never existed.
+			return fmt.Errorf("failed to read job %s: %w", args[0], err)
 		}
 		enc := json.NewEncoder(os.Stdout)
 		return enc.Encode(job)
