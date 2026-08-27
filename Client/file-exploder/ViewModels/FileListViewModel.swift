@@ -190,7 +190,7 @@ class FileListViewModel: ObservableObject {
         } catch {
             finalError = "フォルダ作成エラー: \(error.localizedDescription)"
         }
-        await refreshThenReport(finalError.map { [$0] } ?? [])
+        await refreshThenReport(finalError.map { [$0] } ?? [], from: sftp)
     }
 
     func deleteFiles(_ files: [RemoteFile]) async {
@@ -216,7 +216,7 @@ class FileListViewModel: ObservableObject {
                 finalErrors.append("削除エラー (\(operation.name)): \(error.localizedDescription)")
             }
         }
-        await refreshThenReport(finalErrors)
+        await refreshThenReport(finalErrors, from: sftp)
     }
 
     func renameFile(_ file: RemoteFile, to newName: String) async {
@@ -232,7 +232,7 @@ class FileListViewModel: ObservableObject {
         } catch {
             finalError = "名前変更エラー: \(error.localizedDescription)"
         }
-        await refreshThenReport(finalError.map { [$0] } ?? [])
+        await refreshThenReport(finalError.map { [$0] } ?? [], from: sftp)
     }
 
     func copyFiles(_ files: [RemoteFile], to destination: String) async {
@@ -272,7 +272,7 @@ class FileListViewModel: ObservableObject {
                 finalErrors.append("\(actionName)エラー (\(operation.name)): \(error.localizedDescription)")
             }
         }
-        await refreshThenReport(finalErrors)
+        await refreshThenReport(finalErrors, from: sftp)
     }
 
     func changePermissions(_ files: [RemoteFile], mode: String) async {
@@ -298,7 +298,7 @@ class FileListViewModel: ObservableObject {
                 finalErrors.append("権限変更エラー (\(operation.name)): \(error.localizedDescription)")
             }
         }
-        await refreshThenReport(finalErrors)
+        await refreshThenReport(finalErrors, from: sftp)
     }
 
     @discardableResult
@@ -395,7 +395,12 @@ class FileListViewModel: ObservableObject {
         return isPathAllowed(path) ? path : nil
     }
 
-    private func refreshThenReport(_ newErrors: [String]) async {
+    /// Reports what an operation ran into, but only while the session it ran
+    /// against is still the current one. Switching servers - or windows -
+    /// mid-operation would otherwise surface errors about the old host next to
+    /// the new host's file list, after disconnect() had already retired them.
+    private func refreshThenReport(_ newErrors: [String], from service: SFTPService) async {
+        guard service === sftp else { return }
         errorLog.addOperationErrors(newErrors)
         await refresh()
         publishErrors()
