@@ -17,6 +17,13 @@ class FileListViewModel: ObservableObject {
     private var settingsObserver: NSObjectProtocol?
     private var lastAppliedSettings: Settings?
 
+    /// A queued job plus the display name it came from, so a failure that only
+    /// surfaces while waiting can still say which file it was about.
+    private struct QueuedOperation {
+        let id: String
+        let name: String
+    }
+
     private struct Settings: Equatable {
         let showHiddenFiles: Bool
         let refreshInterval: Double
@@ -157,7 +164,7 @@ class FileListViewModel: ObservableObject {
 
     func deleteFiles(_ files: [RemoteFile]) async {
         guard let sftp else { return }
-        var waitIDs: [String] = []
+        var queued: [QueuedOperation] = []
         var finalErrors: [String] = []
         for file in files {
             guard isPathAllowed(file.path) else {
@@ -165,16 +172,17 @@ class FileListViewModel: ObservableObject {
                 continue
             }
             do {
-                waitIDs.append(try await sftp.addToQueue(type: "delete", src: file.path, dst: nil))
+                let id = try await sftp.addToQueue(type: "delete", src: file.path, dst: nil)
+                queued.append(QueuedOperation(id: id, name: file.name))
             } catch {
                 finalErrors.append("削除登録エラー (\(file.name)): \(error.localizedDescription)")
             }
         }
-        for id in waitIDs {
+        for operation in queued {
             do {
-                try await sftp.waitForJob(id: id)
+                try await sftp.waitForJob(id: operation.id)
             } catch {
-                finalErrors.append("削除エラー: \(error.localizedDescription)")
+                finalErrors.append("削除エラー (\(operation.name)): \(error.localizedDescription)")
             }
         }
         await refreshThenReport(finalErrors)
@@ -210,7 +218,7 @@ class FileListViewModel: ObservableObject {
             errorMessage = type == "copy" ? "複製先が許可範囲外です" : "移動先が許可範囲外です"
             return
         }
-        var waitIDs: [String] = []
+        var queued: [QueuedOperation] = []
         var finalErrors: [String] = []
         for file in files {
             guard isPathAllowed(file.path) else {
@@ -219,17 +227,18 @@ class FileListViewModel: ObservableObject {
             }
             let destinationPath = RemotePath.appending(file.name, to: destination)
             do {
-                waitIDs.append(try await sftp.addToQueue(type: type, src: file.path, dst: destinationPath))
+                let id = try await sftp.addToQueue(type: type, src: file.path, dst: destinationPath)
+                queued.append(QueuedOperation(id: id, name: file.name))
             } catch {
                 finalErrors.append("登録エラー (\(file.name)): \(error.localizedDescription)")
             }
         }
-        for id in waitIDs {
+        let actionName = type == "copy" ? "コピー" : "移動"
+        for operation in queued {
             do {
-                try await sftp.waitForJob(id: id)
+                try await sftp.waitForJob(id: operation.id)
             } catch {
-                let actionName = type == "copy" ? "コピー" : "移動"
-                finalErrors.append("\(actionName)エラー: \(error.localizedDescription)")
+                finalErrors.append("\(actionName)エラー (\(operation.name)): \(error.localizedDescription)")
             }
         }
         await refreshThenReport(finalErrors)
