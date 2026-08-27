@@ -157,5 +157,36 @@ final class QueueJobClipboardLogTests: XCTestCase {
         XCTAssertFalse(job.clipboardLog.contains("完了日時:"))
         XCTAssertFalse(job.clipboardLog.contains("エラー:"))
         XCTAssertTrue(job.clipboardLog.contains("内容: 作成 /srv/new-directory"))
+
+final class RemoteFileIdentityTests: XCTestCase {
+    private func file(named name: String, in directory: String = "/srv") -> RemoteFile {
+        RemoteFile(
+            name: name,
+            path: directory + "/" + name,
+            size: 0,
+            modificationDate: Date(timeIntervalSince1970: 0),
+            isDirectory: false,
+            isSymlink: false,
+            permissions: FilePermissions.from(octal: 0o644)
+        )
+    }
+
+    /// A Linux server holds these as two separate files; Swift compares their
+    /// paths as equal, so the id has to be what keeps them apart.
+    func testCanonicallyEquivalentNamesGetDistinctIdentities() {
+        let composed = file(named: "caf\u{00e9}.txt")      // NFC
+        let decomposed = file(named: "cafe\u{0301}.txt")   // NFD
+
+        XCTAssertEqual(composed.path, decomposed.path, "Swift String equality is canonical — the premise of this test")
+        XCTAssertNotEqual(composed.id, decomposed.id)
+        XCTAssertNotEqual(composed, decomposed)
+        XCTAssertEqual(Set([composed, decomposed]).count, 2)
+        XCTAssertEqual(Set([composed.id, decomposed.id]).count, 2)
+    }
+
+    func testIdentityIsStableAndDistinguishesDifferentPaths() {
+        XCTAssertEqual(file(named: "a.txt").id, file(named: "a.txt").id)
+        XCTAssertNotEqual(file(named: "a.txt").id, file(named: "b.txt").id)
+        XCTAssertNotEqual(file(named: "a.txt", in: "/srv").id, file(named: "a.txt", in: "/srv2").id)
     }
 }
