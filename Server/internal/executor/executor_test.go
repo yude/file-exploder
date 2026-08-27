@@ -589,3 +589,76 @@ func TestCopyPreservesSetuidSetgidAndSticky(t *testing.T) {
 		t.Errorf("directory copy mode = %v, want setgid+sticky 0775", got)
 	}
 }
+
+// The RENAME_NOREPLACE fallbacks cannot be reached through a normal copy here:
+// tmpfs and ext4 both support the flag. Drive them directly.
+func TestStagedDirectoryPublishKeepsSpecialBits(t *testing.T) {
+	dir := t.TempDir()
+	staging := filepath.Join(dir, ".staging")
+	if err := os.Mkdir(staging, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "inner"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// What copyDir hands over: staging already carries the source's mode.
+	wanted := os.FileMode(0775) | os.ModeSetgid | os.ModeSticky
+	if err := os.Chmod(staging, wanted); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(dir, "published")
+	if err := publishStagedDirectoryWithoutAtomicRename(staging, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := copyableMode(info.Mode()); got != wanted {
+		t.Errorf("published mode = %v, want %v", got, wanted)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "inner")); err != nil {
+		t.Errorf("contents not published: %v", err)
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Errorf("staging survived: %v", err)
+	}
+}
+
+func TestPlaceholderRenameKeepsModeAndRefusesAnOccupiedDestination(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source")
+	if err := os.WriteFile(src, []byte("content"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	wanted := os.FileMode(0640) | os.ModeSetuid
+	if err := os.Chmod(src, wanted); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "moved")
+
+	if err := renameNoReplaceWithPlaceholder(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := copyableMode(info.Mode()); got != wanted {
+		t.Errorf("moved mode = %v, want %v", got, wanted)
+	}
+
+	// The whole point of the fallback is that it still refuses to replace.
+	if err := os.WriteFile(src, []byte("again"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := renameNoReplaceWithPlaceholder(src, dst); err == nil {
+		t.Fatal("placeholder rename overwrote an existing destination")
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil || string(data) != "content" {
+		t.Fatalf("destination changed: %q, %v", data, err)
+	}
+}

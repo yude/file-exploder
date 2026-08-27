@@ -416,7 +416,10 @@ func publishStagedDirectoryWithoutAtomicRename(staging, dst string) error {
 			return err
 		}
 	}
-	if err := os.Chmod(dst, stagingInfo.Mode().Perm()); err != nil {
+	// copyableMode, not Perm(): copyDir has already put the source's setuid,
+	// setgid and sticky bits on the staging directory, and masking to 0777 here
+	// would drop them again on exactly the filesystems that take this path.
+	if err := os.Chmod(dst, copyableMode(stagingInfo.Mode())); err != nil {
 		return err
 	}
 	if err := os.Chtimes(dst, stagingInfo.ModTime(), stagingInfo.ModTime()); err != nil {
