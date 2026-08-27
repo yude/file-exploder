@@ -46,22 +46,51 @@ class SSHConnection: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func runCommand(_ command: String) async throws -> String {
-        let process = Process()
-
+    private func register(_ process: Process) throws {
         activeProcessesLock.lock()
+        defer { activeProcessesLock.unlock() }
         if invalidated {
-            activeProcessesLock.unlock()
             throw CancellationError()
         }
         activeProcesses.append(process)
-        activeProcessesLock.unlock()
+    }
 
-        defer {
-            activeProcessesLock.lock()
-            activeProcesses.removeAll { $0 === process }
-            activeProcessesLock.unlock()
+    private func unregister(_ process: Process) {
+        activeProcessesLock.lock()
+        activeProcesses.removeAll { $0 === process }
+        activeProcessesLock.unlock()
+    }
+
+    private func isInvalidated() -> Bool {
+        activeProcessesLock.lock()
+        defer { activeProcessesLock.unlock() }
+        return invalidated
+    }
+
+    /// Reads a handle to EOF on the calling thread. Exactly one reader per pipe
+    /// keeps the bytes in order, and the loop keeps draining past the size limit
+    /// so the child never blocks writing into a full pipe.
+    private func drain(_ handle: FileHandle, into sink: SendableData) {
+        while true {
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                break
+            }
+            sink.append(chunk)
         }
+    }
+
+    private func runCommand(_ command: String) async throws -> String {
+        try Task.checkCancellation()
+
+        let process = Process()
+        try register(process)
+        defer { unregister(process) }
+
+        // onCancel can land between the dispatch below and process.run(), when
+        // there is no running process for it to terminate; this lets the
+        // launching thread notice and skip the spawn entirely.
+        let cancelled = CancellationFlag()
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -76,19 +105,32 @@ class SSHConnection: ObservableObject, @unchecked Sendable {
                 let outputData = SendableData(limit: 64 * 1024 * 1024)
                 let errorData = SendableData(limit: 1024 * 1024)
 
-                pipe.fileHandleForReading.readabilityHandler = { handle in
-                    outputData.append(handle.availableData)
-                }
-                errorPipe.fileHandleForReading.readabilityHandler = { handle in
-                    errorData.append(handle.availableData)
-                }
+                // Each pipe is drained to EOF by a single thread, then the exit
+                // status is collected. The previous shape mixed a
+                // readabilityHandler with a readDataToEndOfFile issued from the
+                // termination handler: both read the same descriptor
+                // concurrently, so chunks could be appended out of order and a
+                // large listing came back as unparseable JSON.
+                DispatchQueue.global(qos: .userInitiated).async { [self] in
+                    guard !isInvalidated(), !cancelled.isSet else {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    do {
+                        try process.run()
+                    } catch {
+                        continuation.resume(throwing: SSHError.connectionFailed(error.localizedDescription))
+                        return
+                    }
 
-                process.terminationHandler = { _ in
-                    pipe.fileHandleForReading.readabilityHandler = nil
-                    errorPipe.fileHandleForReading.readabilityHandler = nil
-
-                    outputData.append(pipe.fileHandleForReading.readDataToEndOfFile())
-                    errorData.append(errorPipe.fileHandleForReading.readDataToEndOfFile())
+                    let stderrDrained = DispatchSemaphore(value: 0)
+                    DispatchQueue.global(qos: .userInitiated).async { [self] in
+                        drain(errorPipe.fileHandleForReading, into: errorData)
+                        stderrDrained.signal()
+                    }
+                    drain(pipe.fileHandleForReading, into: outputData)
+                    stderrDrained.wait()
+                    process.waitUntilExit()
 
                     let (data, outputExceeded) = outputData.get()
                     let (errorBytes, errorExceeded) = errorData.get()
@@ -103,39 +145,28 @@ class SSHConnection: ObservableObject, @unchecked Sendable {
                             return
                         }
                         continuation.resume(returning: output)
-                    } else {
-                        var message = String(data: errorBytes, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                        if message.isEmpty {
-                            message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error (Exit code: \(process.terminationStatus))"
-                        }
-
-                        if message.contains("Permission denied") {
-                            message = "認証に失敗しました (Permission denied)"
-                        } else if message.contains("Connection timed out") || message.contains("Operation timed out") {
-                            message = "接続がタイムアウトしました"
-                        } else if message.contains("No route to host") {
-                            message = "ホストに到達できません"
-                        } else if message.contains("command not found") || message.contains("No such file or directory") && message.contains("file-exploder") {
-                            message = "サーバーに file-exploder がインストールされていないか、PATHが通っていません。\n詳細: \(message)"
-                        }
-                        continuation.resume(throwing: SSHError.commandFailed(message))
-                    }
-                }
-
-                do {
-                    activeProcessesLock.lock()
-                    let shouldRun = !invalidated && !Task.isCancelled
-                    activeProcessesLock.unlock()
-                    guard shouldRun else {
-                        continuation.resume(throwing: CancellationError())
                         return
                     }
-                    try process.run()
-                } catch {
-                    continuation.resume(throwing: SSHError.connectionFailed(error.localizedDescription))
+
+                    var message = String(data: errorBytes, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if message.isEmpty {
+                        message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error (Exit code: \(process.terminationStatus))"
+                    }
+
+                    if message.contains("Permission denied") {
+                        message = "認証に失敗しました (Permission denied)"
+                    } else if message.contains("Connection timed out") || message.contains("Operation timed out") {
+                        message = "接続がタイムアウトしました"
+                    } else if message.contains("No route to host") {
+                        message = "ホストに到達できません"
+                    } else if message.contains("command not found") || message.contains("No such file or directory") && message.contains("file-exploder") {
+                        message = "サーバーに file-exploder がインストールされていないか、PATHが通っていません。\n詳細: \(message)"
+                    }
+                    continuation.resume(throwing: SSHError.commandFailed(message))
                 }
             }
         } onCancel: {
+            cancelled.set()
             if process.isRunning {
                 process.terminate()
             }
@@ -205,6 +236,23 @@ enum SSHError: LocalizedError {
         case .keyNotFound(let path):
             return "SSH key not found at: \(path)"
         }
+    }
+}
+
+private final class CancellationFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set() {
+        lock.lock()
+        value = true
+        lock.unlock()
     }
 }
 
