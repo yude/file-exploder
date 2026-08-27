@@ -1,15 +1,21 @@
 import Foundation
 
 struct FormatUtils {
-    static func formattedSize(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-    }
-    
-    static func formattedDate(_ date: Date) -> String {
+    /// Reused across every row: building a `DateFormatter` per call is costly
+    /// enough to show up while scrolling a large directory.
+    private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    static func formattedSize(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    static func formattedDate(_ date: Date) -> String {
+        dateFormatter.string(from: date)
     }
     
     static func relativeDate(_ date: Date) -> String {

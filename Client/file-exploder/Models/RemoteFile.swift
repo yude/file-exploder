@@ -18,14 +18,11 @@ struct RemoteFile: Identifiable, Hashable {
         if isDirectory {
             return "--"
         }
-        return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+        return FormatUtils.formattedSize(size)
     }
     
     var formattedDate: String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: modificationDate)
+        FormatUtils.formattedDate(modificationDate)
     }
 
     var symbolicPermissions: String {
