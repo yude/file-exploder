@@ -18,7 +18,16 @@ if ! command -v go >/dev/null 2>&1; then
     exit 1
 fi
 
-REQUIRED_GO_VERSION="1.26.7"
+# Run from the server source directory so go.mod is the single source of truth
+# for the required toolchain; a second copy of the version here would drift the
+# moment go.mod is bumped, and the check would then pass a Go that cannot build.
+cd "$(dirname "$0")"
+
+REQUIRED_GO_VERSION="$(sed -n 's/^go[[:space:]]\{1,\}\([0-9][0-9.]*\).*$/\1/p' go.mod)"
+if [ -z "$REQUIRED_GO_VERSION" ]; then
+    echo "Could not read the required Go version from $(pwd)/go.mod." >&2
+    exit 1
+fi
 INSTALLED_GO_VERSION="$(go env GOVERSION | sed 's/^go//')"
 if [ "$(printf '%s\n%s\n' "$REQUIRED_GO_VERSION" "$INSTALLED_GO_VERSION" | sort -V | head -n1)" != "$REQUIRED_GO_VERSION" ]; then
     echo "Go $REQUIRED_GO_VERSION or newer is required; found Go $INSTALLED_GO_VERSION." >&2
@@ -39,7 +48,6 @@ mkdir -p "$INSTALL_DIR"
 mkdir -p "$SERVICE_DIR"
 
 echo "Building file-exploder..."
-cd "$(dirname "$0")"
 BUILD_OUTPUT="$(mktemp)"
 trap 'rm -f "$BUILD_OUTPUT"' EXIT
 go build -buildvcs=false -o "$BUILD_OUTPUT" .
