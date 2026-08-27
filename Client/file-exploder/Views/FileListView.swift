@@ -117,13 +117,13 @@ struct FileListView: View {
                     .width(min: 80, ideal: 100)
                 }
                 .contextMenu(forSelectionType: String.self) { selection in
-                    if let fileId = selection.first,
-                       let file = filteredFiles.first(where: { $0.id == fileId }) {
-                        fileContextMenu(file: file, selection: selection)
+                    let targets = files(in: selection)
+                    if !targets.isEmpty {
+                        fileContextMenu(targets: targets)
                     }
                 } primaryAction: { selection in
-                    if let fileId = selection.first,
-                       let file = filteredFiles.first(where: { $0.id == fileId }) {
+                    let targets = files(in: selection)
+                    if targets.count == 1, let file = targets.first {
                         Task { await viewModel.openFile(file) }
                     }
                 }
@@ -260,65 +260,71 @@ struct FileListView: View {
     // MARK: - Context Menu
     
     @ViewBuilder
-    private func fileContextMenu(file: RemoteFile, selection: Set<String>) -> some View {
+    private func fileContextMenu(targets: [RemoteFile]) -> some View {
         Group {
-            if file.isDirectory {
-                Button("開く") {
-                    Task { await viewModel.openFile(file) }
+            // Opening and renaming act on one file. The selection is a Set, so
+            // with several rows selected there is no "the" file to act on — this
+            // used to take an arbitrary member and rename that one, which is not
+            // the row the user right-clicked.
+            if targets.count == 1, let file = targets.first {
+                if file.isDirectory {
+                    Button("開く") {
+                        Task { await viewModel.openFile(file) }
+                    }
+                }
+
+                Divider()
+
+                Button("名前の変更") {
+                    renameText = file.name
+                    renamingFile = file
                 }
             }
-            
-            Divider()
-            
-            Button("名前の変更") {
-                renameText = file.name
-                renamingFile = file
-            }
-            
+
             Button("移動") {
                 moveDestinationText = viewModel.currentPath
-                filesToMove = actionFiles(selection: selection, fallback: file)
+                filesToMove = targets
                 showMoveSheet = true
             }
-            
+
             Button("サーバー内で複製") {
                 moveDestinationText = viewModel.currentPath
-                filesToCopy = actionFiles(selection: selection, fallback: file)
+                filesToCopy = targets
                 showCopySheet = true
             }
-            
+
             Button("パスをコピー") {
-                let paths = actionFiles(selection: selection, fallback: file).map(\.path)
                 #if os(macOS)
                 let pasteboard = NSPasteboard.general
                 pasteboard.clearContents()
-                pasteboard.setString(paths.joined(separator: "\n"), forType: .string)
+                pasteboard.setString(targets.map(\.path).joined(separator: "\n"), forType: .string)
                 #endif
             }
-            
+
             Divider()
-            
+
             Menu("権限") {
                 ForEach(["755", "644", "777", "600"], id: \.self) { mode in
                     Button(mode) {
-                        let targets = actionFiles(selection: selection, fallback: file)
                         Task { await viewModel.changePermissions(targets, mode: mode) }
                     }
                 }
             }
-            
+
             Divider()
-            
+
             Button("削除", role: .destructive) {
-                filesToDelete = actionFiles(selection: selection, fallback: file)
+                filesToDelete = targets
                 showingDeleteConfirmation = true
             }
         }
     }
 
-    private func actionFiles(selection: Set<String>, fallback file: RemoteFile) -> [RemoteFile] {
-        let selected = filteredFiles.filter { selection.contains($0.id) }
-        return selected.isEmpty ? [file] : selected
+    /// The rows a menu acts on. SwiftUI hands the context menu the effective
+    /// selection - right-clicking an unselected row yields just that row - so
+    /// this is authoritative and preserves the on-screen order.
+    private func files(in selection: Set<String>) -> [RemoteFile] {
+        filteredFiles.filter { selection.contains($0.id) }
     }
 }
 
