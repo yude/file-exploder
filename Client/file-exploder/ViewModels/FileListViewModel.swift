@@ -15,6 +15,12 @@ class FileListViewModel: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var navigationGeneration = 0
     private var settingsObserver: NSObjectProtocol?
+    private var lastAppliedSettings: Settings?
+
+    private struct Settings: Equatable {
+        let showHiddenFiles: Bool
+        let refreshInterval: Double
+    }
 
     private(set) var sftp: SFTPService?
     private var ssh: SSHConnection?
@@ -38,13 +44,14 @@ class FileListViewModel: ObservableObject {
         ssh = sshConnection
         sftp = SFTPService(ssh: sshConnection)
 
+        lastAppliedSettings = currentSettings
         settingsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
             object: nil,
             queue: nil
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                await self?.refresh()
+                await self?.applySettingsChangeIfNeeded()
             }
         }
 
@@ -76,6 +83,7 @@ class FileListViewModel: ObservableObject {
 
         ssh = nil
         sftp = nil
+        lastAppliedSettings = nil
         files = []
         currentPath = "/"
         pathHistory = []
@@ -274,6 +282,20 @@ class FileListViewModel: ObservableObject {
         }
         isLoading = false
         return true
+    }
+
+    private var currentSettings: Settings {
+        Settings(showHiddenFiles: showHiddenFiles, refreshInterval: refreshInterval)
+    }
+
+    /// `didChangeNotification` fires for every defaults write, the saved server
+    /// list included. Re-listing only when a setting this view model actually
+    /// reads has changed keeps unrelated writes from triggering an SSH round trip.
+    private func applySettingsChangeIfNeeded() async {
+        let settings = currentSettings
+        guard settings != lastAppliedSettings else { return }
+        lastAppliedSettings = settings
+        await refresh()
     }
 
     private func startAutoRefresh() {
