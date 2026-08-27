@@ -104,6 +104,9 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := config.DefaultConfig()
+	if err := guardDataDir(cfg.DataDir, addSrc, addDst); err != nil {
+		return err
+	}
 	if err := cfg.EnsureDirs(); err != nil {
 		return err
 	}
@@ -133,4 +136,45 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		"id":     job.ID,
 		"status": "pending",
 	})
+}
+
+// guardDataDir refuses operations that would destroy the queue's own state.
+//
+// The data directory is an ordinary directory under $HOME, so it is reachable
+// from the client's file list like any other. Deleting it through the queue
+// unlinks the database out from under the running daemon: the daemon keeps
+// writing to the unlinked file while the next CLI call creates a fresh one, so
+// from that point every job is accepted, reported as pending, and silently
+// never runs - with the history gone and the daemon lock file removed, so a
+// second daemon can start too. Nothing in the client can tell the user any of
+// that happened.
+//
+// Any ancestor of the directory has the same effect, so those are refused as
+// well. This is a footgun guard, not a sandbox: the same operation over plain
+// SSH is still the user's to make.
+func guardDataDir(dataDir string, paths ...string) error {
+	absDataDir, err := filepath.Abs(dataDir)
+	if err != nil {
+		return err
+	}
+	absDataDir = filepath.Clean(absDataDir)
+
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		if pathsOverlap(filepath.Clean(path), absDataDir) {
+			return fmt.Errorf("refusing to queue an operation on the file-exploder data directory: %s", absDataDir)
+		}
+	}
+	return nil
+}
+
+// pathsOverlap reports whether either path is the other, or contains it.
+func pathsOverlap(a, b string) bool {
+	return a == b || pathContains(a, b) || pathContains(b, a)
+}
+
+func pathContains(parent, child string) bool {
+	return strings.HasPrefix(child, strings.TrimSuffix(parent, string(filepath.Separator))+string(filepath.Separator))
 }
