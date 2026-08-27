@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -30,7 +31,7 @@ func DefaultConfig() *Config {
 
 func (c *Config) EnsureDirs() error {
 	if !filepath.IsAbs(c.DataDir) {
-		return &os.PathError{Op: "configure", Path: c.DataDir, Err: os.ErrInvalid}
+		return fmt.Errorf("data directory must be an absolute path, got %q: set FILE_EXPLODER_DATA_DIR, or make sure HOME is set", c.DataDir)
 	}
 	info, err := os.Stat(c.DataDir)
 	if os.IsNotExist(err) {
