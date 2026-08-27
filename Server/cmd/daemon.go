@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -62,8 +63,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	exec := executor.NewExecutor(q)
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -72,16 +73,16 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	for {
 		select {
-		case sig := <-sigCh:
-			logger.Printf("Received signal %v, shutting down", sig)
+		case <-ctx.Done():
+			logger.Println("Shutdown signal received, stopping")
 			return nil
 		case <-ticker.C:
-			processPendingJobs(q, exec, logger)
+			processPendingJobs(ctx, q, exec, logger)
 		}
 	}
 }
 
-func processPendingJobs(q queue.Queue, exec *executor.Executor, logger *log.Logger) {
+func processPendingJobs(ctx context.Context, q queue.Queue, exec *executor.Executor, logger *log.Logger) {
 	jobs, err := q.GetPendingJobs()
 	if err != nil {
 		logger.Printf("Error fetching pending jobs: %v", err)
@@ -89,6 +90,14 @@ func processPendingJobs(q queue.Queue, exec *executor.Executor, logger *log.Logg
 	}
 
 	for _, job := range jobs {
+		// Stop claiming work as soon as a shutdown is requested. The job
+		// already in flight still runs to completion; the rest stay pending
+		// for the next start instead of being reset to failed.
+		if ctx.Err() != nil {
+			logger.Printf("Shutdown requested, leaving job %s pending", job.ID)
+			return
+		}
+
 		logger.Printf("Processing job %s (%s): %s -> %s", job.ID, job.Type, job.SrcPath, job.DstPath)
 
 		started, err := q.StartJob(job.ID)
