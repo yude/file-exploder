@@ -11,7 +11,22 @@ struct QueueJob: Identifiable, Codable {
     let createdAt: Date
     let startedAt: Date?
     let completedAt: Date?
-    
+
+    /// The daemon serialises jobs with snake_case keys (see `queue.Job` in the
+    /// Go server), so the mapping has to be spelled out.
+    enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case srcPath = "src_path"
+        case dstPath = "dst_path"
+        case mode
+        case status
+        case error
+        case createdAt = "created_at"
+        case startedAt = "started_at"
+        case completedAt = "completed_at"
+    }
+
     enum OperationType: String, Codable {
         case rename
         case move
