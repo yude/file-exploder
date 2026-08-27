@@ -72,6 +72,12 @@ struct QueuePanelView: View {
         }
         .frame(width: 250)
         .task(id: refreshTaskID) {
+            // Without a connection there is nothing to poll; looping anyway
+            // just wakes the panel every two seconds to do nothing.
+            guard sftp != nil else {
+                isLoading = false
+                return
+            }
             isLoading = true
             while !Task.isCancelled {
                 await refresh()
