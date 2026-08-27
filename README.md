@@ -10,6 +10,8 @@ A native macOS SSH remote file manager with server-side operation queuing.
 - **Server-Side Queue** — File operations continue even after client disconnect
 - **Persistent Operations** — Queue survives client disconnection
 - **Multiple Operations** — Rename, move, delete, copy, mkdir, chmod
+- **Symlink Aware** — Links are shown as links, and symlinked directories can be
+  browsed like ordinary ones
 
 ## Architecture
 
@@ -51,6 +53,11 @@ Check it with `systemctl --user status file-exploder`. The client's configured
 remote root is a navigation boundary, not an operating-system sandbox; the
 daemon has exactly the access rights of the SSH user.
 
+Every command writes JSON to stdout and errors to stderr, so the client can
+parse results without screen-scraping. Queue state lives in
+`~/.file-exploder/queue.db`; set `FILE_EXPLODER_DATA_DIR` to an absolute path to
+move the database, log, and daemon lock elsewhere.
+
 ### Client (macOS)
 
 ```bash
@@ -69,18 +76,25 @@ Or open `Client/Package.swift` in Xcode and build (Command+B).
 # Add operation to queue
 file-exploder add --type rename --src /path/a --dst /path/b
 file-exploder add --type move --src /path/a --dst /path/newdir/a
+file-exploder add --type copy --src /path/a --dst /path/newdir/a
 file-exploder add --type delete --src /path/file
 file-exploder add --type mkdir --dst /path/newdir
 file-exploder add --type chmod --dst /path/file --mode 755
 
-# Check queue status
+# Check queue status (all pending and running jobs, or one job by id)
 file-exploder status
+file-exploder status <job-id>
 
-# Cancel a job
+# Cancel a job. Only pending jobs can be cancelled: once the daemon has
+# started acting on the files there is nothing safe to roll back to.
 file-exploder cancel <job-id>
 
-# View logs
+# View recent finished jobs
 file-exploder log
+
+# Inspect the filesystem as JSON (used by the macOS client)
+file-exploder list /path/to/dir
+file-exploder stat /path/to/file
 
 # Start daemon
 file-exploder daemon
