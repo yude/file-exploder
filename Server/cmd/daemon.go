@@ -226,16 +226,43 @@ func processPendingJobs(ctx context.Context, q queue.Queue, exec *executor.Execu
 
 		if err := exec.Execute(job); err != nil {
 			logger.Printf("Job %s failed: %v", job.ID, err)
-			errUpdate := q.UpdateStatus(job.ID, queue.StatusFailed, err.Error())
-			if errUpdate != nil {
-				logger.Printf("FATAL: Failed to update job %s to failed: %v", job.ID, errUpdate)
-			}
+			recordTerminalStatus(q, job.ID, queue.StatusFailed, err.Error(), logger)
 			continue
 		}
 
 		logger.Printf("Job %s completed", job.ID)
-		if errUpdate := q.UpdateStatus(job.ID, queue.StatusCompleted, ""); errUpdate != nil {
-			logger.Printf("FATAL: Failed to update job %s to completed: %v", job.ID, errUpdate)
+		recordTerminalStatus(q, job.ID, queue.StatusCompleted, "", logger)
+	}
+}
+
+// terminalStatusAttempts bounds the retries below.
+const terminalStatusAttempts = 3
+
+// recordTerminalStatus writes the outcome of a finished job, retrying a failed
+// write before giving up.
+//
+// The work is already done by this point, and the row is the only record of it.
+// A row left 'running' is picked up by nothing: GetPendingJobs skips it, cancel
+// refuses it, and the client's stalled-queue detection treats anything running
+// as progress - so waitForJob waits on it without end, for an operation that
+// actually succeeded. Only a daemon restart clears it, and then it is reported
+// as failed.
+//
+// A write here should not fail; if it does - a full disk under the queue, an
+// I/O error - one more attempt is worth far more than the alternative.
+func recordTerminalStatus(q queue.Queue, id string, status queue.JobStatus, errMsg string, logger *log.Logger) {
+	var err error
+	for attempt := 1; attempt <= terminalStatusAttempts; attempt++ {
+		if err = q.UpdateStatus(id, status, errMsg); err == nil {
+			if attempt > 1 {
+				logger.Printf("Recorded job %s as %s on attempt %d", id, status, attempt)
+			}
+			return
+		}
+		if attempt < terminalStatusAttempts {
+			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
 		}
 	}
+	logger.Printf("FATAL: could not record job %s as %s after %d attempts, so it stays running and nothing will pick it up: %v",
+		id, status, terminalStatusAttempts, err)
 }
