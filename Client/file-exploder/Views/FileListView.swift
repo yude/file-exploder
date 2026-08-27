@@ -271,9 +271,14 @@ struct FileListView: View {
             
             Spacer()
             
-            // Selection info
-            if !selectedFiles.isEmpty {
-                Text("\(selectedFiles.count) 項目を選択中")
+            // Selection info. Counted against the rows on screen, not against
+            // the raw selection: a search can hide rows that stay selected, and
+            // every action goes through files(in:), which only ever sees what is
+            // displayed. Counting the rest would promise more than any menu item
+            // would then do.
+            let selectionOnScreen = files(in: selectedFiles).count
+            if selectionOnScreen > 0 {
+                Text("\(selectionOnScreen) 項目を選択中")
                     .foregroundColor(.secondary)
                     .font(.caption)
             }
