@@ -45,7 +45,7 @@ type Queue interface {
 	StartJob(id string) (bool, error)
 	GetPendingJobs() ([]*Job, error)
 	GetActiveJobs() ([]*Job, error)
-	ResetRunningJobs() error
+	ResetRunningJobs() ([]*Job, error)
 	CancelJob(id string) error
 	GetRecentLogs(limit int) ([]*Job, error)
 }

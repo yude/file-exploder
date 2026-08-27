@@ -235,12 +235,45 @@ func (q *SQLiteQueue) GetActiveJobs() ([]*Job, error) {
 	return q.queryJobs(`SELECT ` + jobColumns + ` FROM jobs WHERE status IN ('pending', 'running') ORDER BY created_at ASC`)
 }
 
-func (q *SQLiteQueue) ResetRunningJobs() error {
-	_, err := q.db.Exec(
+// ResetRunningJobs fails every job left mid-flight by a previous daemon and
+// returns them, so the caller can clean up whatever they were part-way through
+// writing.
+func (q *SQLiteQueue) ResetRunningJobs() ([]*Job, error) {
+	tx, err := q.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT ` + jobColumns + ` FROM jobs WHERE status = 'running'`)
+	if err != nil {
+		return nil, err
+	}
+	var interrupted []*Job
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		interrupted = append(interrupted, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.Join(err, rows.Close())
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	if _, err := tx.Exec(
 		`UPDATE jobs SET status='failed', error='daemon stopped before completion', completed_at=? WHERE status='running'`,
 		time.Now().UTC(),
-	)
-	return err
+	); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return interrupted, nil
 }
 
 func (q *SQLiteQueue) CancelJob(id string) error {

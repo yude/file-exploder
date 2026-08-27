@@ -98,8 +98,12 @@ func TestResetRunningJobsMarksFailure(t *testing.T) {
 	if started, err := q.StartJob("running"); err != nil || !started {
 		t.Fatalf("StartJob() = %v, %v", started, err)
 	}
-	if err := q.ResetRunningJobs(); err != nil {
+	interrupted, err := q.ResetRunningJobs()
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(interrupted) != 1 || interrupted[0].ID != "running" {
+		t.Fatalf("ResetRunningJobs() reported %#v", interrupted)
 	}
 	job, err := q.GetJob("running")
 	if err != nil {

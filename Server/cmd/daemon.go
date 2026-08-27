@@ -60,8 +60,18 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 	defer q.Close()
 
-	if err := q.ResetRunningJobs(); err != nil {
+	interrupted, err := q.ResetRunningJobs()
+	if err != nil {
 		logger.Printf("Failed to reset running jobs: %v", err)
+	}
+	for _, job := range interrupted {
+		removed, err := executor.RemoveOrphanedStaging(job)
+		for _, path := range removed {
+			logger.Printf("Removed staging left by interrupted job %s: %s", job.ID, path)
+		}
+		if err != nil {
+			logger.Printf("Failed to clean staging for job %s: %v", job.ID, err)
+		}
 	}
 
 	exec := executor.NewExecutor(q)

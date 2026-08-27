@@ -320,3 +320,73 @@ func TestStagingPatternStaysShortAndValid(t *testing.T) {
 		t.Fatalf("pattern truncated mid-rune: %q", pattern)
 	}
 }
+
+func TestRemoveOrphanedStagingReclaimsInterruptedCopies(t *testing.T) {
+	tmpDir := t.TempDir()
+	dst := filepath.Join(tmpDir, "destination")
+
+	// What a SIGKILL during copyDir and copyFile leaves behind.
+	stagingDir := filepath.Join(tmpDir, ".destination.123456.tmp")
+	if err := os.Mkdir(stagingDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stagingDir, "partial"), []byte("half"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stagingFile := filepath.Join(tmpDir, ".destination.987.tmp")
+	if err := os.WriteFile(stagingFile, []byte("half"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Everything else must survive, including names that only resemble the
+	// pattern this package generates.
+	keep := []string{
+		"destination",                 // a finished copy from another run
+		".destination.tmp",            // no random component
+		".destination.abc.tmp",        // not a number
+		".destination.123456.tmp.bak", // wrong suffix
+		".other.123456.tmp",           // another destination's staging
+		".hidden",
+	}
+	for _, name := range keep {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed, err := RemoveOrphanedStaging(&queue.Job{Type: queue.JobCopy, DstPath: dst})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 2 {
+		t.Fatalf("removed %v, want both staging entries", removed)
+	}
+	for _, path := range []string{stagingDir, stagingFile} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("%s survived: %v", path, err)
+		}
+	}
+	for _, name := range keep {
+		if _, err := os.Stat(filepath.Join(tmpDir, name)); err != nil {
+			t.Errorf("%s was removed: %v", name, err)
+		}
+	}
+}
+
+func TestRemoveOrphanedStagingIgnoresJobsThatNeverStage(t *testing.T) {
+	tmpDir := t.TempDir()
+	staging := filepath.Join(tmpDir, ".destination.1.tmp")
+	if err := os.WriteFile(staging, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, jobType := range []queue.JobType{queue.JobMkdir, queue.JobChmod, queue.JobDelete} {
+		removed, err := RemoveOrphanedStaging(&queue.Job{Type: jobType, DstPath: filepath.Join(tmpDir, "destination")})
+		if err != nil || len(removed) != 0 {
+			t.Errorf("%s: removed %v, %v", jobType, removed, err)
+		}
+	}
+	if _, err := os.Stat(staging); err != nil {
+		t.Fatalf("staging removed for a job type that never stages: %v", err)
+	}
+}

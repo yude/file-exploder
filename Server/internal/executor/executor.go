@@ -381,6 +381,80 @@ func stagingPattern(name string) string {
 	return "." + hint + ".*.tmp"
 }
 
+// RemoveOrphanedStaging deletes the half-written staging entry a copy was
+// assembling when the daemon died. copyFile and copyDir stage under a temp name
+// and rely on a deferred cleanup, which a SIGKILL, an OOM or a crash never runs
+// - so the debris was left in the user's own directory, hidden behind a leading
+// dot and never reclaimed, holding on to as much space as had been copied.
+//
+// Only the destination parent of an interrupted job is examined, and only names
+// matching the pattern this package generates. Returns the paths it removed.
+func RemoveOrphanedStaging(job *queue.Job) ([]string, error) {
+	switch job.Type {
+	case queue.JobCopy, queue.JobMove, queue.JobRename:
+	default:
+		// Nothing else stages; rename only does when it falls back to a copy.
+		return nil, nil
+	}
+	if job.DstPath == "" || !filepath.IsAbs(job.DstPath) {
+		return nil, nil
+	}
+
+	dst := filepath.Clean(job.DstPath)
+	dir := filepath.Dir(dst)
+	pattern := stagingPattern(filepath.Base(dst))
+	star := strings.LastIndex(pattern, "*")
+	if star < 0 {
+		return nil, nil
+	}
+	prefix, suffix := pattern[:star], pattern[star+1:]
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var removed []string
+	var failures []error
+	for _, entry := range entries {
+		name := entry.Name()
+		if !isStagingName(name, prefix, suffix) {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if err := os.RemoveAll(path); err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		removed = append(removed, path)
+	}
+	return removed, errors.Join(failures...)
+}
+
+// isStagingName matches only what os.CreateTemp and os.MkdirTemp produce from
+// stagingPattern: the fixed prefix, a run of digits, then the fixed suffix.
+func isStagingName(name, prefix, suffix string) bool {
+	if len(name) <= len(prefix)+len(suffix) {
+		return false
+	}
+	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+		return false
+	}
+	digits := name[len(prefix) : len(name)-len(suffix)]
+	if digits == "" {
+		return false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func requireDirectory(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
