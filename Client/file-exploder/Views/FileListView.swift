@@ -43,7 +43,32 @@ struct FileListView: View {
             .padding(.vertical, 6)
             
             Divider()
-            
+
+            // An operation that failed belongs beside the listing, not instead
+            // of it: the directory loaded fine, one action within it did not.
+            // Routing these through the same full-page error meant a single
+            // failed delete hid every file until the user navigated away.
+            if let operationError = viewModel.errors.operationMessage {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text(operationError)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 0)
+                    Button(action: { viewModel.dismissOperationErrors() }) {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("閉じる")
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+
+                Divider()
+            }
+
             // File table
             if !viewModel.hasConnection {
                 Spacer()
@@ -61,13 +86,13 @@ struct FileListView: View {
                 ProgressView("読み込み中...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 Spacer()
-            } else if let error = viewModel.errorMessage {
+            } else if let listingError = viewModel.errors.listingError {
                 Spacer()
                 VStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.largeTitle)
                         .foregroundColor(.orange)
-                    Text(error)
+                    Text(listingError)
                         .foregroundColor(.secondary)
                     Button("再試行") {
                         Task { await viewModel.reload() }

@@ -190,3 +190,29 @@ final class RemoteFileIdentityTests: XCTestCase {
         XCTAssertNotEqual(file(named: "a.txt", in: "/srv").id, file(named: "a.txt", in: "/srv2").id)
     }
 }
+
+final class ErrorLogSeparationTests: XCTestCase {
+    /// The listing error stands alone so the view can show a full-page failure;
+    /// operation errors stand alone so the view can show a banner and keep the
+    /// file list on screen.
+    func testTheTwoKindsAreReadableSeparately() {
+        var log = ErrorLog()
+        XCTAssertNil(log.operationMessage)
+        XCTAssertNil(log.listingError)
+
+        log.addOperationError("削除エラー (a.txt)")
+        XCTAssertEqual(log.operationMessage, "削除エラー (a.txt)")
+        XCTAssertNil(log.listingError, "a failed delete must not blank the listing")
+
+        log.addOperationError("名前変更エラー (b.txt)")
+        XCTAssertEqual(log.operationMessage, "削除エラー (a.txt)\n名前変更エラー (b.txt)")
+
+        log.setListingError("一覧が取得できません")
+        XCTAssertEqual(log.listingError, "一覧が取得できません")
+        XCTAssertEqual(log.operationMessage, "削除エラー (a.txt)\n名前変更エラー (b.txt)")
+
+        log.clearOperationErrors()
+        XCTAssertNil(log.operationMessage)
+        XCTAssertEqual(log.listingError, "一覧が取得できません")
+    }
+}

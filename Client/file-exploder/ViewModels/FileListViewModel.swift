@@ -6,7 +6,11 @@ class FileListViewModel: ObservableObject {
     @Published var currentPath: String = "/"
     @Published var files: [RemoteFile] = []
     @Published var isLoading = false
-    @Published var errorMessage: String?
+    /// Published whole so the view can tell a failed listing - which leaves
+    /// nothing to show - from a failed operation, which does not.
+    @Published private(set) var errors = ErrorLog()
+
+    var errorMessage: String? { errors.message }
     @Published var pathHistory: [String] = []
     @Published var pathHistoryIndex: Int = -1
 
@@ -16,9 +20,6 @@ class FileListViewModel: ObservableObject {
     private var navigationGeneration = 0
     private var settingsObserver: NSObjectProtocol?
     private var lastAppliedSettings: Settings?
-
-    /// See `ErrorLog` for why operation and listing errors are tracked apart.
-    private var errorLog = ErrorLog()
 
     /// A queued job plus the display name it came from, so a failure that only
     /// surfaces while waiting can still say which file it was about.
@@ -73,13 +74,13 @@ class FileListViewModel: ObservableObject {
             await navigateTo(path: server.remoteRoot)
             if let message = errorMessage {
                 disconnect()
-                errorMessage = message
+                errors.setListingError(message)
             }
         } catch {
             guard ssh === sshConnection else { return }
             let message = error.localizedDescription
             disconnect()
-            errorMessage = message
+            errors.setListingError(message)
         }
     }
 
@@ -111,13 +112,12 @@ class FileListViewModel: ObservableObject {
         currentPath = "/"
         pathHistory = []
         pathHistoryIndex = -1
-        errorLog.removeAll()
-        errorMessage = nil
+        errors.removeAll()
         isLoading = false
     }
 
     func navigateTo(path: String) async {
-        clearOperationErrors()
+        dismissOperationErrors()
         guard isPathAllowed(path) else {
             reportOperationError("アクセスが許可されていません")
             return
@@ -128,7 +128,7 @@ class FileListViewModel: ObservableObject {
     }
 
     func goBack() async {
-        clearOperationErrors()
+        dismissOperationErrors()
         guard canGoBack else { return }
         let newIndex = pathHistoryIndex - 1
         if await loadPath(pathHistory[newIndex], updateHistory: false) {
@@ -138,7 +138,7 @@ class FileListViewModel: ObservableObject {
     }
 
     func goForward() async {
-        clearOperationErrors()
+        dismissOperationErrors()
         guard canGoForward else { return }
         let newIndex = pathHistoryIndex + 1
         if await loadPath(pathHistory[newIndex], updateHistory: false) {
@@ -164,7 +164,7 @@ class FileListViewModel: ObservableObject {
     /// refreshes it drops the accumulated operation errors, so retrying visibly
     /// clears them when it works.
     func reload() async {
-        clearOperationErrors()
+        dismissOperationErrors()
         await refresh()
     }
 
@@ -311,8 +311,7 @@ class FileListViewModel: ObservableObject {
         navigationGeneration += 1
         let currentGeneration = navigationGeneration
         isLoading = true
-        errorLog.setListingError(nil)
-        publishErrors()
+        errors.setListingError(nil)
         do {
             let fileList = try await sftp.listDirectory(path: path)
             guard currentGeneration == navigationGeneration else { return false }
@@ -329,8 +328,7 @@ class FileListViewModel: ObservableObject {
             files = sortedVisibleFiles(fileList)
         } catch {
             guard currentGeneration == navigationGeneration else { return false }
-            errorLog.setListingError(error.localizedDescription)
-            publishErrors()
+            errors.setListingError(error.localizedDescription)
             isLoading = false
             return false
         }
@@ -401,22 +399,19 @@ class FileListViewModel: ObservableObject {
     /// the new host's file list, after disconnect() had already retired them.
     private func refreshThenReport(_ newErrors: [String], from service: SFTPService) async {
         guard service === sftp else { return }
-        errorLog.addOperationErrors(newErrors)
+        errors.addOperationErrors(newErrors)
         await refresh()
-        publishErrors()
     }
 
     private func reportOperationError(_ message: String) {
-        errorLog.addOperationError(message)
-        publishErrors()
+        errors.addOperationError(message)
     }
 
-    private func clearOperationErrors() {
-        errorLog.clearOperationErrors()
-        publishErrors()
+    /// Retires the operation errors. Called when the user navigates, reloads,
+    /// or dismisses the banner — never by a background refresh, which would put
+    /// back the disappearing-error bug these are separated to avoid.
+    func dismissOperationErrors() {
+        errors.clearOperationErrors()
     }
 
-    private func publishErrors() {
-        errorMessage = errorLog.message
-    }
 }

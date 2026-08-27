@@ -38,6 +38,12 @@ struct ErrorLog: Equatable {
         listingError = nil
     }
 
+    /// The operation errors alone. These belong beside the file list, not
+    /// instead of it: the listing succeeded, one action within it did not.
+    var operationMessage: String? {
+        operationErrors.isEmpty ? nil : operationErrors.joined(separator: "\n")
+    }
+
     /// What the view shows, or nil when there is nothing to report. A listing
     /// error reads on its own; alongside operation errors it is labelled, so it
     /// is clear which part failed.
