@@ -11,6 +11,7 @@ class ConnectionViewModel: ObservableObject {
     private let serversKey = "saved_servers"
     private var connectionGeneration = 0
     private var connectingServerID: UUID?
+    private var defaultsObserver: NSObjectProtocol?
 
     var activeServerID: UUID? {
         connectedServer?.id ?? connectingServerID
@@ -18,18 +19,50 @@ class ConnectionViewModel: ObservableObject {
     
     init() {
         loadServers()
+        // Cmd+N opens a second window, and each one builds its own view model
+        // over the same defaults key. Without this, a window would keep showing
+        // the list exactly as it looked when it opened.
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.reloadIfChanged()
+            }
+        }
+    }
+
+    deinit {
+        if let defaultsObserver {
+            NotificationCenter.default.removeObserver(defaultsObserver)
+        }
     }
     
     func loadServers() {
+        guard let stored = decodeStoredServers() else { return }
+        servers = stored
+    }
+
+    /// Returns the persisted list, or nil when it is present but unreadable -
+    /// in which case the caller keeps whatever it already has rather than
+    /// treating a decode failure as "the user has no servers".
+    private func decodeStoredServers() -> [Server]? {
         guard let data = UserDefaults.standard.data(forKey: serversKey) else {
-            return
+            return []
         }
         do {
-            servers = try JSONDecoder().decode([Server].self, from: data)
+            return try JSONDecoder().decode([Server].self, from: data)
         } catch {
             print("Failed to decode saved servers: \(error)")
             connectionError = "サーバー設定の読み込みに失敗しました: \(error.localizedDescription)"
+            return nil
         }
+    }
+
+    private func reloadIfChanged() {
+        guard let stored = decodeStoredServers(), stored != servers else { return }
+        servers = stored
     }
     
     func saveServers() {
@@ -41,22 +74,32 @@ class ConnectionViewModel: ObservableObject {
             connectionError = "サーバー設定の保存に失敗しました: \(error.localizedDescription)"
         }
     }
-    
-    func addServer(_ server: Server) {
-        servers.append(server)
+
+    /// Applies a change to the list as it is stored *right now*. Writing back a
+    /// copy this window loaded earlier would drop whatever another window saved
+    /// in between: add a server in one window, then one in a second, and the
+    /// first disappears.
+    private func mutateServers(_ mutate: (inout [Server]) -> Void) {
+        var list = decodeStoredServers() ?? servers
+        mutate(&list)
+        servers = list
         saveServers()
     }
     
+    func addServer(_ server: Server) {
+        mutateServers { $0.append(server) }
+    }
+    
     func updateServer(_ server: Server) {
-        if let index = servers.firstIndex(where: { $0.id == server.id }) {
-            servers[index] = server
-            saveServers()
+        mutateServers { list in
+            if let index = list.firstIndex(where: { $0.id == server.id }) {
+                list[index] = server
+            }
         }
     }
     
     func deleteServer(_ server: Server) {
-        servers.removeAll { $0.id == server.id }
-        saveServers()
+        mutateServers { $0.removeAll { $0.id == server.id } }
         if connectedServer?.id == server.id || connectingServerID == server.id {
             connectionGeneration += 1
             connectingServerID = nil
