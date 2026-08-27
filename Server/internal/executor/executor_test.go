@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +58,70 @@ func TestCopyFileDoesNotOverwrite(t *testing.T) {
 	}
 	if string(data) != "keep" {
 		t.Fatalf("destination changed: %q", data)
+	}
+}
+
+func TestRenameNoReplacePlaceholderMovesFileWithoutOverwriting(t *testing.T) {
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "source")
+	dst := filepath.Join(tmpDir, "destination")
+	if err := os.WriteFile(src, []byte("source"), 0640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := renameNoReplaceWithPlaceholder(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil || string(data) != "source" {
+		t.Fatalf("destination = %q, %v", data, err)
+	}
+	if _, err := os.Lstat(src); !os.IsNotExist(err) {
+		t.Fatalf("source survived rename: %v", err)
+	}
+
+	secondSrc := filepath.Join(tmpDir, "second-source")
+	if err := os.WriteFile(secondSrc, []byte("replacement"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := renameNoReplaceWithPlaceholder(secondSrc, dst); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("existing destination error = %v, want ErrExist", err)
+	}
+	data, err = os.ReadFile(dst)
+	if err != nil || string(data) != "source" {
+		t.Fatalf("existing destination changed to %q, %v", data, err)
+	}
+}
+
+func TestPublishStagedDirectoryWithoutAtomicRename(t *testing.T) {
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "staging")
+	dst := filepath.Join(tmpDir, "destination")
+	if err := os.Mkdir(src, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "file"), []byte("content"), 0640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := publishStagedDirectoryWithoutAtomicRename(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dst, "file"))
+	if err != nil || string(data) != "content" {
+		t.Fatalf("copied directory content = %q, %v", data, err)
+	}
+
+	secondStaging := filepath.Join(tmpDir, "second-staging")
+	if err := os.Mkdir(secondStaging, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := publishStagedDirectoryWithoutAtomicRename(secondStaging, dst); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("existing destination error = %v, want ErrExist", err)
+	}
+	data, err = os.ReadFile(filepath.Join(dst, "file"))
+	if err != nil || string(data) != "content" {
+		t.Fatalf("existing directory changed: %q, %v", data, err)
 	}
 }
 

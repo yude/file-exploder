@@ -19,6 +19,8 @@ type Executor struct {
 	q queue.Queue
 }
 
+var errNoReplaceUnsupported = errors.New("filesystem does not support atomic no-replace rename")
+
 func NewExecutor(q queue.Queue) *Executor {
 	return &Executor{q: q}
 }
@@ -67,16 +69,16 @@ func (e *Executor) executeRename(job *queue.Job) error {
 		if errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("destination path already exists: %s", job.DstPath)
 		}
-		if errors.Is(err, syscall.EXDEV) {
+		if errors.Is(err, syscall.EXDEV) || errors.Is(err, errNoReplaceUnsupported) {
 			if copyErr := copyPath(job.SrcPath, job.DstPath); copyErr != nil {
-				return fmt.Errorf("cross-device rename failed during copy: %w", copyErr)
+				return fmt.Errorf("rename fallback failed during copy: %w", copyErr)
 			}
 			currentInfo, statErr := os.Lstat(job.SrcPath)
 			if statErr != nil || !os.SameFile(srcInfo, currentInfo) {
-				return fmt.Errorf("cross-device rename copied the destination but the source changed before deletion")
+				return fmt.Errorf("rename fallback copied the destination but the source changed before deletion")
 			}
 			if delErr := os.RemoveAll(job.SrcPath); delErr != nil {
-				return fmt.Errorf("cross-device rename copied the destination but failed to delete the source: %w", delErr)
+				return fmt.Errorf("rename fallback copied the destination but failed to delete the source: %w", delErr)
 			}
 			return nil
 		}
@@ -341,13 +343,68 @@ func copyDir(src, dst string) error {
 			return err
 		}
 	}
-	if err := renameNoReplace(staging, dst); err != nil {
+	if err := publishStagedDirectory(staging, dst); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("destination already exists: %s", dst)
 		}
 		return err
 	}
 	return syncDir(dstParent)
+}
+
+// publishStagedDirectory normally publishes the completed tree atomically.
+// When the destination filesystem lacks RENAME_NOREPLACE, claim the final name
+// with Mkdir and move the already-complete top-level entries into that private
+// directory. The original source still exists until this function succeeds, so
+// cleaning a failed publication cannot lose user data.
+func publishStagedDirectory(staging, dst string) error {
+	err := renameNoReplace(staging, dst)
+	if err == nil || !errors.Is(err, errNoReplaceUnsupported) {
+		return err
+	}
+	return publishStagedDirectoryWithoutAtomicRename(staging, dst)
+}
+
+func publishStagedDirectoryWithoutAtomicRename(staging, dst string) error {
+	stagingInfo, err := os.Stat(staging)
+	if err != nil {
+		return err
+	}
+	if err := os.Mkdir(dst, 0700); err != nil {
+		return err
+	}
+	claimedInfo, err := os.Lstat(dst)
+	if err != nil {
+		_ = os.Remove(dst)
+		return err
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			removeClaimedDirectory(dst, claimedInfo)
+		}
+	}()
+
+	entries, err := os.ReadDir(staging)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := os.Rename(filepath.Join(staging, entry.Name()), filepath.Join(dst, entry.Name())); err != nil {
+			return err
+		}
+	}
+	if err := os.Chmod(dst, stagingInfo.Mode().Perm()); err != nil {
+		return err
+	}
+	if err := os.Chtimes(dst, stagingInfo.ModTime(), stagingInfo.ModTime()); err != nil {
+		return err
+	}
+	if err := os.Remove(staging); err != nil {
+		return err
+	}
+	complete = true
+	return nil
 }
 
 // destinationInsideSource reports whether dst lands inside the src directory
@@ -469,9 +526,86 @@ func requireDirectory(path string) error {
 func renameNoReplace(src, dst string) error {
 	err := unix.Renameat2(unix.AT_FDCWD, src, unix.AT_FDCWD, dst, unix.RENAME_NOREPLACE)
 	if errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EINVAL) {
-		return fmt.Errorf("rename %s -> %s: filesystem does not support atomic no-replace rename: %w", src, dst, err)
+		if fallbackErr := renameNoReplaceWithPlaceholder(src, dst); fallbackErr != nil {
+			if errors.Is(fallbackErr, errNoReplaceUnsupported) {
+				return fmt.Errorf("%w: rename %s -> %s", errNoReplaceUnsupported, src, dst)
+			}
+			return fmt.Errorf("rename %s -> %s without RENAME_NOREPLACE: %w", src, dst, fallbackErr)
+		}
+		return nil
 	}
 	return err
+}
+
+// renameNoReplaceWithPlaceholder supports regular files on filesystems such as
+// CIFS, FUSE and some union mounts that reject renameat2(RENAME_NOREPLACE). A
+// preflight Lstat followed by rename is not sufficient: another process can
+// create dst in the gap and plain rename would overwrite it. Claim dst
+// atomically first, then replace only the empty inode this call created.
+//
+// There is no fully atomic userspace equivalent to RENAME_NOREPLACE against a
+// malicious process with write access to the same parent. SameFile checks make
+// cleanup conservative, while O_EXCL preserves no-overwrite behaviour for
+// ordinary concurrent file operations and for the daemon's serialized queue.
+func renameNoReplaceWithPlaceholder(src, dst string) error {
+	srcInfo, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+
+	if srcInfo.IsDir() {
+		return errNoReplaceUnsupported
+	}
+
+	placeholder, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0000)
+	if err != nil {
+		return err
+	}
+	placeholderInfo, err := placeholder.Stat()
+	closeErr := placeholder.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		removePlaceholder(dst, placeholderInfo)
+		return err
+	}
+
+	claimed := true
+	defer func() {
+		if claimed {
+			removePlaceholder(dst, placeholderInfo)
+		}
+	}()
+
+	currentInfo, err := os.Lstat(dst)
+	if err != nil || !os.SameFile(placeholderInfo, currentInfo) {
+		return fmt.Errorf("destination placeholder changed before rename")
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return err
+	}
+	claimed = false
+	return nil
+}
+
+// Remove only the placeholder created by this process. If another actor has
+// replaced it, its path must be left alone even while unwinding an error.
+func removePlaceholder(path string, placeholderInfo os.FileInfo) {
+	if placeholderInfo == nil {
+		return
+	}
+	currentInfo, err := os.Lstat(path)
+	if err == nil && os.SameFile(placeholderInfo, currentInfo) {
+		_ = os.Remove(path)
+	}
+}
+
+func removeClaimedDirectory(path string, claimedInfo os.FileInfo) {
+	currentInfo, err := os.Lstat(path)
+	if err == nil && os.SameFile(claimedInfo, currentInfo) {
+		_ = os.RemoveAll(path)
+	}
 }
 
 func syncDir(path string) error {
