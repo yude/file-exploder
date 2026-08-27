@@ -182,3 +182,30 @@ func TestOpensDatabasesUnderAwkwardDirectoryNames(t *testing.T) {
 		t.Fatalf("journal_mode = %q, want wal", journalMode)
 	}
 }
+
+func TestJobsWithNullOptionalColumnsStillScan(t *testing.T) {
+	q := newTestQueue(t)
+	// The schema allows NULL in these columns, so one row written without them
+	// must not take out every query that touches the table.
+	if _, err := q.db.Exec(
+		`INSERT INTO jobs (id, type, src_path, dst_path, mode, status, error, created_at)
+		 VALUES ('sparse', 'delete', NULL, NULL, NULL, 'pending', NULL, ?)`, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := q.GetJob("sparse")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.SrcPath != "" || job.DstPath != "" || job.Mode != "" || job.Error != "" {
+		t.Fatalf("NULL columns did not scan as empty: %#v", job)
+	}
+
+	pending, err := q.GetPendingJobs()
+	if err != nil {
+		t.Fatalf("GetPendingJobs: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("GetPendingJobs returned %d jobs", len(pending))
+	}
+}

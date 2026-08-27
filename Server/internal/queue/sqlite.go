@@ -90,14 +90,20 @@ type rowScanner interface {
 func scanJob(row rowScanner) (*Job, error) {
 	job := &Job{}
 	var startedAt, completedAt sql.NullTime
-	var errMsg sql.NullString
-	if err := row.Scan(&job.ID, &job.Type, &job.SrcPath, &job.DstPath, &job.Mode,
+	// src_path, dst_path and mode are optional per job type and the schema puts
+	// no NOT NULL on them, so a row carrying a NULL rather than '' has to scan
+	// cleanly. Reading them into plain strings failed the whole query - which
+	// meant one such row blinded every listing *and* stopped the daemon picking
+	// up any work, not just that job.
+	var srcPath, dstPath, mode, errMsg sql.NullString
+	if err := row.Scan(&job.ID, &job.Type, &srcPath, &dstPath, &mode,
 		&job.Status, &errMsg, &job.CreatedAt, &startedAt, &completedAt); err != nil {
 		return nil, err
 	}
-	if errMsg.Valid {
-		job.Error = errMsg.String
-	}
+	job.SrcPath = srcPath.String
+	job.DstPath = dstPath.String
+	job.Mode = mode.String
+	job.Error = errMsg.String
 	if startedAt.Valid {
 		job.StartedAt = &startedAt.Time
 	}
