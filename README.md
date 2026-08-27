@@ -64,8 +64,39 @@ the access rights of the SSH user.
 
 Every command writes JSON to stdout and errors to stderr, so the client can
 parse results without screen-scraping. Queue state lives in
-`~/.file-exploder/queue.db`; set `FILE_EXPLODER_DATA_DIR` to an absolute path to
-move the database, log, and daemon lock elsewhere.
+`~/.file-exploder/queue.db`.
+
+### Moving the queue elsewhere
+
+`FILE_EXPLODER_DATA_DIR` relocates the database, log and daemon lock, but it
+has to reach **both** the daemon and the CLI. They are started very differently
+and neither picks up your shell's startup files: a systemd user manager does not
+source `~/.bashrc`, and the stock `~/.bashrc` returns early for the
+non-interactive shell an SSH command gets. Set it in one place only and the
+daemon and the CLI end up on separate queues, where every operation is accepted,
+reported as pending, and never runs.
+
+Put it in the file the service reads:
+
+```bash
+mkdir -p ~/.config/file-exploder
+echo 'FILE_EXPLODER_DATA_DIR=/srv/file-exploder' > ~/.config/file-exploder/env
+systemctl --user restart file-exploder
+```
+
+and make the same file reach your SSH sessions, above the non-interactive guard
+near the top of `~/.bashrc`:
+
+```bash
+set -a; . ~/.config/file-exploder/env; set +a
+```
+
+Check that both agree before relying on it:
+
+```bash
+systemctl --user show-environment | grep FILE_EXPLODER_DATA_DIR
+ssh <host> 'echo $FILE_EXPLODER_DATA_DIR'
+```
 
 ### Client (macOS)
 
