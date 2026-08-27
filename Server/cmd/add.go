@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -23,16 +25,20 @@ var addCmd = &cobra.Command{
 }
 
 var (
-	addType string
-	addSrc  string
-	addDst  string
-	addMode string
+	addType      string
+	addSrc       string
+	addDst       string
+	addSrcBase64 string
+	addDstBase64 string
+	addMode      string
 )
 
 func init() {
 	addCmd.Flags().StringVar(&addType, "type", "", "Operation type: rename, move, delete, copy, mkdir, chmod")
 	addCmd.Flags().StringVar(&addSrc, "src", "", "Source path")
 	addCmd.Flags().StringVar(&addDst, "dst", "", "Destination path")
+	addCmd.Flags().StringVar(&addSrcBase64, "src-base64", "", "Source path encoded as UTF-8 Base64")
+	addCmd.Flags().StringVar(&addDstBase64, "dst-base64", "", "Destination path encoded as UTF-8 Base64")
 	addCmd.Flags().StringVar(&addMode, "mode", "", "File mode (for chmod)")
 	if err := addCmd.MarkFlagRequired("type"); err != nil {
 		panic(err)
@@ -41,6 +47,15 @@ func init() {
 }
 
 func runAdd(cmd *cobra.Command, args []string) error {
+	srcPath, err := decodePathFlag("src", addSrc, addSrcBase64)
+	if err != nil {
+		return err
+	}
+	dstPath, err := decodePathFlag("dst", addDst, addDstBase64)
+	if err != nil {
+		return err
+	}
+
 	// Validate job type
 	validTypes := map[string]bool{
 		"rename": true, "move": true, "delete": true,
@@ -51,17 +66,17 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	// Basic validation
-	if (addType == "rename" || addType == "move" || addType == "copy") && (addSrc == "" || addDst == "") {
+	if (addType == "rename" || addType == "move" || addType == "copy") && (srcPath == "" || dstPath == "") {
 		return fmt.Errorf("both --src and --dst are required for %s", addType)
 	}
-	if addType == "delete" && addSrc == "" {
+	if addType == "delete" && srcPath == "" {
 		return fmt.Errorf("--src is required for delete")
 	}
-	if addType == "mkdir" && addDst == "" {
+	if addType == "mkdir" && dstPath == "" {
 		return fmt.Errorf("--dst is required for mkdir")
 	}
 	if addType == "chmod" {
-		if addDst == "" || addMode == "" {
+		if dstPath == "" || addMode == "" {
 			return fmt.Errorf("both --dst and --mode are required for chmod")
 		}
 		// Reject a bad mode here so it never reaches the queue, using the same
@@ -76,19 +91,19 @@ func runAdd(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("--mode is not valid for %s", addType)
 		}
 	case "delete":
-		if addDst != "" || addMode != "" {
+		if dstPath != "" || addMode != "" {
 			return fmt.Errorf("--dst and --mode are not valid for delete")
 		}
 	case "mkdir":
-		if addSrc != "" || addMode != "" {
+		if srcPath != "" || addMode != "" {
 			return fmt.Errorf("--src and --mode are not valid for mkdir")
 		}
 	case "chmod":
-		if addSrc != "" {
+		if srcPath != "" {
 			return fmt.Errorf("--src is not valid for chmod")
 		}
 	}
-	for _, path := range []string{addSrc, addDst} {
+	for _, path := range []string{srcPath, dstPath} {
 		if path == "" {
 			continue
 		}
@@ -104,7 +119,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := config.DefaultConfig()
-	if err := guardDataDir(cfg.DataDir, addSrc, addDst); err != nil {
+	if err := guardDataDir(cfg.DataDir, srcPath, dstPath); err != nil {
 		return err
 	}
 	if err := cfg.EnsureDirs(); err != nil {
@@ -120,8 +135,8 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	job := &queue.Job{
 		ID:        uuid.New().String(),
 		Type:      queue.JobType(addType),
-		SrcPath:   addSrc,
-		DstPath:   addDst,
+		SrcPath:   srcPath,
+		DstPath:   dstPath,
 		Mode:      addMode,
 		Status:    queue.StatusPending,
 		CreatedAt: time.Now(),
@@ -136,6 +151,29 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		"id":     job.ID,
 		"status": "pending",
 	})
+}
+
+// decodePathFlag keeps remote path bytes out of the macOS Process argument
+// conversion. Foundation may expose canonically equivalent Unicode using a
+// different normalization form, while Linux filenames compare the UTF-8 bytes
+// exactly. The client therefore transports paths as ASCII Base64 and decoding
+// happens only after the command reaches Linux.
+func decodePathFlag(name, plain, encoded string) (string, error) {
+	if plain != "" && encoded != "" {
+		return "", fmt.Errorf("--%s and --%s-base64 cannot be used together", name, name)
+	}
+	if encoded == "" {
+		return plain, nil
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", fmt.Errorf("invalid --%s-base64: %w", name, err)
+	}
+	if !utf8.Valid(decoded) {
+		return "", fmt.Errorf("--%s-base64 is not valid UTF-8", name)
+	}
+	return string(decoded), nil
 }
 
 // guardDataDir refuses operations that would destroy the queue's own state.

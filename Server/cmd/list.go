@@ -48,16 +48,31 @@ func newFileInfo(path, name string, info os.FileInfo) FileInfo {
 var listCmd = &cobra.Command{
 	Use:   "list [path]",
 	Short: "List directory contents safely as JSON",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE:  runList,
 }
 
+var listPathBase64 string
+
 func init() {
+	listCmd.Flags().StringVar(&listPathBase64, "path-base64", "", "Path encoded as UTF-8 Base64")
 	rootCmd.AddCommand(listCmd)
 }
 
 func runList(cmd *cobra.Command, args []string) error {
-	results, err := listDirectory(args[0])
+	plainPath := ""
+	if len(args) == 1 {
+		plainPath = args[0]
+	}
+	target, err := decodePathFlag("path", plainPath, listPathBase64)
+	if err != nil {
+		return err
+	}
+	if target == "" {
+		return fmt.Errorf("a path or --path-base64 is required")
+	}
+
+	results, err := listDirectory(target)
 	if err != nil {
 		return err
 	}

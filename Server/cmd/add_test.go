@@ -1,9 +1,40 @@
 package cmd
 
 import (
+	"encoding/base64"
 	"path/filepath"
 	"testing"
 )
+
+func TestDecodePathFlagPreservesUnicodeNormalization(t *testing.T) {
+	composed := "/mnt/store3/聞きたいこと\u304cある.m2ts"
+	decomposed := "/mnt/store3/聞きたいこと\u304b\u3099ある.m2ts"
+	encoded := base64.StdEncoding.EncodeToString([]byte(composed))
+
+	got, err := decodePathFlag("src", "", encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != composed {
+		t.Fatalf("decoded path = %q, want byte-identical %q", got, composed)
+	}
+	if got == decomposed {
+		t.Fatal("decoded path was changed to a canonically equivalent normalization")
+	}
+}
+
+func TestDecodePathFlagRejectsAmbiguousOrInvalidInput(t *testing.T) {
+	if _, err := decodePathFlag("src", "/plain", "L2VuY29kZWQ="); err == nil {
+		t.Fatal("accepted both plain and encoded source paths")
+	}
+	if _, err := decodePathFlag("src", "", "not base64"); err == nil {
+		t.Fatal("accepted invalid Base64")
+	}
+	invalidUTF8 := base64.StdEncoding.EncodeToString([]byte{0xff})
+	if _, err := decodePathFlag("src", "", invalidUTF8); err == nil {
+		t.Fatal("accepted a path that is not valid UTF-8")
+	}
+}
 
 func TestGuardDataDirRefusesOperationsOnTheQueuesOwnState(t *testing.T) {
 	dataDir := "/home/user/.file-exploder"

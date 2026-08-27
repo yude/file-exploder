@@ -37,6 +37,28 @@ final class ShellEscapingTests: XCTestCase {
     func testEscapesSingleQuotes() {
         XCTAssertEqual("a'b".shellEscaped, "'a'\\''b'")
     }
+
+    func testBase64TransportPreservesUnicodeNormalization() {
+        let composed = "/mnt/store3/聞きたいこと\u{304c}ある.m2ts"
+        let decomposed = "/mnt/store3/聞きたいこと\u{304b}\u{3099}ある.m2ts"
+
+        XCTAssertNotEqual(Array(composed.utf8), Array(decomposed.utf8))
+        XCTAssertEqual(Data(base64Encoded: composed.utf8Base64), Data(composed.utf8))
+        XCTAssertEqual(Data(base64Encoded: decomposed.utf8Base64), Data(decomposed.utf8))
+        XCTAssertNotEqual(composed.utf8Base64, decomposed.utf8Base64)
+    }
+}
+
+final class RemotePathJSONNormalizationTests: XCTestCase {
+    func testDecoderPreservesComposedPathBytesBeforeBase64Transport() throws {
+        let data = Data(
+            #"{"name":"\u304c","path":"/\u304c","size":0,"modificationDate":0,"isDirectory":false,"isSymlink":false,"permissions":420}"#.utf8
+        )
+        let item = try JSONDecoder.fileExploderDecoder().decode(RemoteFileJSON.self, from: data)
+
+        XCTAssertEqual(Array(item.path.utf8), [0x2f, 0xe3, 0x81, 0x8c])
+        XCTAssertEqual(Data(base64Encoded: item.path.utf8Base64), Data(item.path.utf8))
+    }
 }
 
 final class ErrorLogTests: XCTestCase {

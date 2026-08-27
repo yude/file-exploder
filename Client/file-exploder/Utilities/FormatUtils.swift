@@ -81,4 +81,11 @@ extension String {
         let escaped = self.replacingOccurrences(of: "'", with: "'\\''")
         return "'\(escaped)'"
     }
+
+    /// ASCII-only transport for remote paths. This prevents macOS process
+    /// argument conversion from changing composed characters into an
+    /// equivalent normalization that names a different file on Linux.
+    var utf8Base64: String {
+        Data(utf8).base64EncodedString()
+    }
 }

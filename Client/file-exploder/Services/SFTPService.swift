@@ -11,9 +11,16 @@ class SFTPService {
     
     /// List directory contents
     func listDirectory(path: String) async throws -> [RemoteFile] {
-        // Use the new go server list command
-        let command = "\(commandPrefix) list -- \(path.shellEscaped)"
-        let output = try await ssh.executeCommand(command)
+        // Keep the path ASCII until it reaches the Go process. Passing a
+        // composed Linux filename directly through macOS Process can turn it
+        // into a canonically equivalent but byte-distinct path.
+        let command = "\(commandPrefix) list --path-base64 \(path.utf8Base64.shellEscaped)"
+        let legacyCommand = "\(commandPrefix) list -- \(path.shellEscaped)"
+        let output = try await executeWithLegacyFallback(
+            command,
+            legacyCommand: legacyCommand,
+            unsupportedFlags: ["--path-base64"]
+        )
         guard let data = output.data(using: .utf8) else {
             throw QueueError.invalidResponse("Empty response")
         }
@@ -25,16 +32,24 @@ class SFTPService {
     /// Add operation to server-side queue
     func addToQueue(type: String, src: String?, dst: String?, mode: String? = nil) async throws -> String {
         var command = "\(commandPrefix) add --type \(type)"
+        var legacyCommand = command
         if let src = src {
-            command += " --src \(src.shellEscaped)"
+            command += " --src-base64 \(src.utf8Base64.shellEscaped)"
+            legacyCommand += " --src \(src.shellEscaped)"
         }
         if let dst = dst {
-            command += " --dst \(dst.shellEscaped)"
+            command += " --dst-base64 \(dst.utf8Base64.shellEscaped)"
+            legacyCommand += " --dst \(dst.shellEscaped)"
         }
         if let mode = mode {
             command += " --mode \(mode.shellEscaped)"
+            legacyCommand += " --mode \(mode.shellEscaped)"
         }
-        let output = try await ssh.executeCommand(command)
+        let output = try await executeWithLegacyFallback(
+            command,
+            legacyCommand: legacyCommand,
+            unsupportedFlags: ["--src-base64", "--dst-base64"]
+        )
         // Parse JSON response {"id":"xxx","status":"pending"}
         guard let data = output.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -140,6 +155,26 @@ class SFTPService {
     }
     
     // MARK: - Private helpers
+
+    /// Keep a new client usable with an older server. Cobra rejects unknown
+    /// flags before running the command, so retrying only this exact error can
+    /// never enqueue an operation twice.
+    private func executeWithLegacyFallback(
+        _ command: String,
+        legacyCommand: String,
+        unsupportedFlags: [String]
+    ) async throws -> String {
+        do {
+            return try await ssh.executeCommand(command)
+        } catch {
+            let message = error.localizedDescription
+            let isUnsupported = unsupportedFlags.contains {
+                message.contains("unknown flag: \($0)")
+            }
+            guard isUnsupported else { throw error }
+            return try await ssh.executeCommand(legacyCommand)
+        }
+    }
 
     private func makeRemoteFile(_ item: RemoteFileJSON) -> RemoteFile {
         RemoteFile(
