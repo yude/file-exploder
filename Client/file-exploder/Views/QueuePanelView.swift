@@ -117,6 +117,14 @@ struct QueuePanelView: View {
         }
         .frame(width: 250)
         .task(id: refreshTaskID) {
+            // The task restarts when the connection changes, so this is also
+            // where the previous session's jobs have to go: leaving them meant
+            // the panel kept listing a disconnected server's queue as if it
+            // were live.
+            activeJobs = []
+            logJobs = []
+            errorMessage = nil
+
             // Without a connection there is nothing to poll; looping anyway
             // just wakes the panel every two seconds to do nothing.
             guard sftp != nil else {
