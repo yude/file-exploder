@@ -25,15 +25,6 @@ func runStat(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	result := FileInfo{
-		Name:             info.Name(),
-		Path:             target,
-		Size:             info.Size(),
-		ModificationDate: info.ModTime().Unix(),
-		IsDirectory:      info.IsDir(),
-		Permissions:      uint32(info.Mode() & os.ModePerm),
-	}
-
 	enc := json.NewEncoder(os.Stdout)
-	return enc.Encode(result)
+	return enc.Encode(newFileInfo(target, info.Name(), info))
 }

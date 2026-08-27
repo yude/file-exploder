@@ -147,6 +147,7 @@ class SFTPService {
             size: item.size,
             modificationDate: Date(timeIntervalSince1970: TimeInterval(item.modificationDate)),
             isDirectory: item.isDirectory,
+            isSymlink: item.isSymlink ?? false,
             permissions: FilePermissions.from(octal: Int(item.permissions))
         )
     }
@@ -177,6 +178,8 @@ struct RemoteFileJSON: Codable {
     let size: Int64
     let modificationDate: Int64
     let isDirectory: Bool
+    /// Optional so the client keeps working against daemons predating the field.
+    let isSymlink: Bool?
     let permissions: UInt32
 }
 

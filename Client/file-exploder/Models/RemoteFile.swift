@@ -7,6 +7,7 @@ struct RemoteFile: Identifiable, Hashable {
     let size: Int64
     let modificationDate: Date
     let isDirectory: Bool
+    let isSymlink: Bool
     let permissions: FilePermissions
     
     var displayName: String {
@@ -28,7 +29,7 @@ struct RemoteFile: Identifiable, Hashable {
     }
 
     var symbolicPermissions: String {
-        permissions.symbolicString(isDirectory: isDirectory)
+        permissions.symbolicString(isDirectory: isDirectory, isSymlink: isSymlink)
     }
     
     func hash(into hasher: inout Hasher) {
@@ -58,8 +59,15 @@ struct FilePermissions: Hashable {
         return "\(owner)\(group)\(other)"
     }
     
-    func symbolicString(isDirectory: Bool) -> String {
-        var str = isDirectory ? "d" : "-"
+    func symbolicString(isDirectory: Bool, isSymlink: Bool) -> String {
+        var str: String
+        if isSymlink {
+            str = "l"
+        } else if isDirectory {
+            str = "d"
+        } else {
+            str = "-"
+        }
         
         str += ownerRead ? "r" : "-"
         str += ownerWrite ? "w" : "-"

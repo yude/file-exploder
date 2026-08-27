@@ -24,7 +24,10 @@ struct FileIcons {
         if file.isDirectory {
             return "folder.fill"
         }
-        
+        if file.isSymlink {
+            return "link"
+        }
+
         let ext = (file.name as NSString).pathExtension.lowercased()
         
         switch ext {

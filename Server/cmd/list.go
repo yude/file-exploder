@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -14,7 +16,31 @@ type FileInfo struct {
 	Size             int64  `json:"size"`
 	ModificationDate int64  `json:"modificationDate"`
 	IsDirectory      bool   `json:"isDirectory"`
+	IsSymlink        bool   `json:"isSymlink"`
 	Permissions      uint32 `json:"permissions"`
+}
+
+// newFileInfo describes a path from its lstat result. Symbolic links are
+// reported as links, but IsDirectory follows the link so the client can descend
+// into symlinked directories; a link whose target is gone stays a plain entry.
+func newFileInfo(path, name string, info os.FileInfo) FileInfo {
+	isSymlink := info.Mode()&os.ModeSymlink != 0
+	isDir := info.IsDir()
+	if isSymlink {
+		if target, err := os.Stat(path); err == nil {
+			isDir = target.IsDir()
+		}
+	}
+
+	return FileInfo{
+		Name:             name,
+		Path:             path,
+		Size:             info.Size(),
+		ModificationDate: info.ModTime().Unix(),
+		IsDirectory:      isDir,
+		IsSymlink:        isSymlink,
+		Permissions:      uint32(info.Mode() & os.ModePerm),
+	}
 }
 
 var listCmd = &cobra.Command{
@@ -39,17 +65,15 @@ func runList(cmd *cobra.Command, args []string) error {
 	for _, entry := range entries {
 		info, err := entry.Info()
 		if err != nil {
+			// The entry was removed between ReadDir and Info; skip it rather
+			// than failing the whole listing over a concurrent change.
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
 			return err
 		}
 
-		results = append(results, FileInfo{
-			Name:             entry.Name(),
-			Path:             filepath.Join(target, entry.Name()),
-			Size:             info.Size(),
-			ModificationDate: info.ModTime().Unix(),
-			IsDirectory:      entry.IsDir(),
-			Permissions:      uint32(info.Mode() & os.ModePerm),
-		})
+		results = append(results, newFileInfo(filepath.Join(target, entry.Name()), entry.Name(), info))
 	}
 
 	enc := json.NewEncoder(os.Stdout)
