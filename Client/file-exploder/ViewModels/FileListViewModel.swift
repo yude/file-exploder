@@ -79,6 +79,17 @@ class FileListViewModel: ObservableObject {
         }
     }
 
+    deinit {
+        // A window can be closed without disconnecting first, and
+        // NotificationCenter retains the block regardless of its weak capture -
+        // so every closed window would leave one behind, woken on every
+        // defaults write for the life of the process.
+        if let settingsObserver {
+            NotificationCenter.default.removeObserver(settingsObserver)
+        }
+        refreshTask?.cancel()
+    }
+
     func disconnect() {
         ssh?.terminateAll()
         refreshTask?.cancel()
