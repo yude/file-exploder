@@ -8,6 +8,10 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// jobColumns is the projection every job query shares, in the order scanJob
+// expects.
+const jobColumns = `id, type, src_path, dst_path, mode, status, error, created_at, started_at, completed_at`
+
 type SQLiteQueue struct {
 	db *sql.DB
 }
@@ -61,15 +65,20 @@ func (q *SQLiteQueue) AddJob(job *Job) error {
 }
 
 func (q *SQLiteQueue) GetJob(id string) (*Job, error) {
+	return scanJob(q.db.QueryRow(`SELECT `+jobColumns+` FROM jobs WHERE id = ?`, id))
+}
+
+// rowScanner is satisfied by both *sql.Row and *sql.Rows.
+type rowScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanJob(row rowScanner) (*Job, error) {
 	job := &Job{}
 	var startedAt, completedAt sql.NullTime
 	var errMsg sql.NullString
-	err := q.db.QueryRow(
-		`SELECT id, type, src_path, dst_path, mode, status, error, created_at, started_at, completed_at
-		 FROM jobs WHERE id = ?`, id,
-	).Scan(&job.ID, &job.Type, &job.SrcPath, &job.DstPath, &job.Mode,
-		&job.Status, &errMsg, &job.CreatedAt, &startedAt, &completedAt)
-	if err != nil {
+	if err := row.Scan(&job.ID, &job.Type, &job.SrcPath, &job.DstPath, &job.Mode,
+		&job.Status, &errMsg, &job.CreatedAt, &startedAt, &completedAt); err != nil {
 		return nil, err
 	}
 	if errMsg.Valid {
@@ -137,13 +146,11 @@ func (q *SQLiteQueue) finishRunningJob(id string, status JobStatus, errMsg strin
 }
 
 func (q *SQLiteQueue) GetPendingJobs() ([]*Job, error) {
-	return q.queryJobs(`SELECT id, type, src_path, dst_path, mode, status, error, created_at, started_at, completed_at
-		FROM jobs WHERE status = 'pending' ORDER BY created_at ASC`)
+	return q.queryJobs(`SELECT ` + jobColumns + ` FROM jobs WHERE status = 'pending' ORDER BY created_at ASC`)
 }
 
 func (q *SQLiteQueue) GetActiveJobs() ([]*Job, error) {
-	return q.queryJobs(`SELECT id, type, src_path, dst_path, mode, status, error, created_at, started_at, completed_at
-		FROM jobs WHERE status IN ('pending', 'running') ORDER BY created_at ASC`)
+	return q.queryJobs(`SELECT ` + jobColumns + ` FROM jobs WHERE status IN ('pending', 'running') ORDER BY created_at ASC`)
 }
 
 func (q *SQLiteQueue) ResetRunningJobs() error {
@@ -152,11 +159,6 @@ func (q *SQLiteQueue) ResetRunningJobs() error {
 		time.Now(),
 	)
 	return err
-}
-
-func (q *SQLiteQueue) GetAllJobs() ([]*Job, error) {
-	return q.queryJobs(`SELECT id, type, src_path, dst_path, mode, status, error, created_at, started_at, completed_at
-		FROM jobs ORDER BY created_at DESC`)
 }
 
 func (q *SQLiteQueue) CancelJob(id string) error {
@@ -192,9 +194,9 @@ func (q *SQLiteQueue) GetRecentLogs(limit int) ([]*Job, error) {
 	if limit > 1000 {
 		limit = 1000
 	}
-	return q.queryJobs(fmt.Sprintf(`SELECT id, type, src_path, dst_path, mode, status, error, created_at, started_at, completed_at
+	return q.queryJobs(`SELECT `+jobColumns+`
 		FROM jobs WHERE status IN ('completed', 'failed', 'cancelled')
-		ORDER BY completed_at DESC, created_at DESC LIMIT %d`, limit))
+		ORDER BY completed_at DESC, created_at DESC LIMIT ?`, limit)
 }
 
 func (q *SQLiteQueue) queryJobs(query string, args ...interface{}) ([]*Job, error) {
@@ -206,21 +208,9 @@ func (q *SQLiteQueue) queryJobs(query string, args ...interface{}) ([]*Job, erro
 
 	jobs := make([]*Job, 0)
 	for rows.Next() {
-		job := &Job{}
-		var startedAt, completedAt sql.NullTime
-		var errMsg sql.NullString
-		if err := rows.Scan(&job.ID, &job.Type, &job.SrcPath, &job.DstPath, &job.Mode,
-			&job.Status, &errMsg, &job.CreatedAt, &startedAt, &completedAt); err != nil {
+		job, err := scanJob(rows)
+		if err != nil {
 			return nil, err
-		}
-		if errMsg.Valid {
-			job.Error = errMsg.String
-		}
-		if startedAt.Valid {
-			job.StartedAt = &startedAt.Time
-		}
-		if completedAt.Valid {
-			job.CompletedAt = &completedAt.Time
 		}
 		jobs = append(jobs, job)
 	}

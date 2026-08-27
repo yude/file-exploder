@@ -133,3 +133,24 @@ func TestRecentLogsContainOnlyTerminalJobsAndEncodeAsArray(t *testing.T) {
 		t.Fatalf("logs = %#v", logs)
 	}
 }
+
+func TestRecentLogsHonoursLimit(t *testing.T) {
+	q := newTestQueue(t)
+	for _, id := range []string{"first", "second", "third"} {
+		addTestJob(t, q, id)
+		if started, err := q.StartJob(id); err != nil || !started {
+			t.Fatalf("StartJob(%q) = %v, %v", id, started, err)
+		}
+		if err := q.UpdateStatus(id, StatusCompleted, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	logs, err := q.GetRecentLogs(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 2 {
+		t.Fatalf("GetRecentLogs(2) returned %d jobs", len(logs))
+	}
+}
