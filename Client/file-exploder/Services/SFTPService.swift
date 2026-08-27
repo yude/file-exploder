@@ -91,6 +91,13 @@ class SFTPService {
     /// queue is treated as stalled.
     private static let stalledQueueGracePeriod: TimeInterval = 30
 
+    /// Consecutive polling failures tolerated before a wait gives up. Each poll
+    /// is its own SSH connection, so one refused connection or dropped session
+    /// used to abort the wait and report a queued operation as failed - while
+    /// the server went on to run it. Only an unbroken run of failures means the
+    /// connection is really gone.
+    private static let pollFailuresTolerated = 3
+
     /// Wait for a queued operation. Once a job is running the wait is unbounded:
     /// a large copy legitimately takes minutes and must not be reported as
     /// failed for missing an arbitrary UI deadline.
@@ -111,9 +118,27 @@ class SFTPService {
         var everStarted = false
         var stalledObservations = 0
 
+        var consecutiveFailures = 0
+
         while timeout == nil || Date().timeIntervalSince(start) < timeout! {
             try Task.checkCancellation()
-            let job = try await getJobStatus(id: id)
+
+            let job: QueueJob
+            do {
+                job = try await getJobStatus(id: id)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                consecutiveFailures += 1
+                if consecutiveFailures > Self.pollFailuresTolerated {
+                    throw error
+                }
+                try await Task.sleep(nanoseconds: pollInterval)
+                pollInterval = min(pollInterval * 2, maxPollInterval)
+                continue
+            }
+            consecutiveFailures = 0
+
             switch job.status {
             case .completed:
                 return
@@ -125,7 +150,9 @@ class SFTPService {
                 everStarted = true
             case .pending:
                 if !everStarted, Date().timeIntervalSince(pendingSince) > Self.stalledQueueGracePeriod {
-                    if try await queueIsMoving() {
+                    // A failure here says nothing about the queue, so treat it
+                    // as "still moving" and let the next poll decide.
+                    if (try? await queueIsMoving()) ?? true {
                         pendingSince = Date()
                         stalledObservations = 0
                     } else {
