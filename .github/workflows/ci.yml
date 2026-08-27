@@ -28,6 +28,17 @@ jobs:
       - run: go test -count=1 -race ./...
       - run: go build -buildvcs=false ./...
 
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The two scripts users are told to run are not covered by anything else
+      # here, so a syntax error in either only surfaces when someone runs it.
+      - name: Check shell scripts parse
+        run: |
+          bash -n Server/install.sh
+          bash -n Client/build_mac.sh
+
   client:
     runs-on: macos-14
     defaults:
