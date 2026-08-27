@@ -7,8 +7,13 @@ struct BreadcrumbView: View {
     
     var pathComponents: [(String, String)] {
         var components: [(String, String)] = []
-        let root = (rootPath as NSString).standardizingPath
-        let current = (path as NSString).standardizingPath
+        let root = RemotePath.standardized(rootPath)
+        let current = RemotePath.standardized(path)
+        // Navigation is confined to the root, but a mid-flight reconnection can
+        // still render this with the two out of step; show just the root rather
+        // than slicing a path that is not underneath it.
+        guard RemotePath.isDescendant(current, of: root) else { return [] }
+
         let relativePath: String
         if root == "/" {
             relativePath = String(current.dropFirst())
@@ -21,7 +26,7 @@ struct BreadcrumbView: View {
 
         var currentPath = root
         for part in parts {
-            currentPath = (currentPath as NSString).appendingPathComponent(part)
+            currentPath = RemotePath.appending(part, to: currentPath)
             components.append((part, currentPath))
         }
         
@@ -33,7 +38,7 @@ struct BreadcrumbView: View {
             HStack(spacing: 4) {
                 // Root
                 Button(action: {
-                    onNavigate((rootPath as NSString).standardizingPath)
+                    onNavigate(RemotePath.standardized(rootPath))
                 }) {
                     Image(systemName: "house")
                 }

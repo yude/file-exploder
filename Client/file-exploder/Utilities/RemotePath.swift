@@ -1,0 +1,55 @@
+import Foundation
+
+/// Lexical path handling for paths that live on the *remote* host.
+///
+/// `NSString.standardizingPath` resolves symlinks against the *local*
+/// filesystem, which on macOS rewrites `/tmp`, `/var` and `/etc` to their
+/// `/private/...` targets. Applied to a remote path that yields something the
+/// server has never heard of, so remote paths are normalised purely lexically
+/// here — the same thing `filepath.Clean` does on the server side.
+enum RemotePath {
+    /// Collapses `.`, `..`, duplicate separators and any trailing separator.
+    /// Relative input is returned untouched: callers reject it separately, and
+    /// silently rooting it would invent a path the user never asked for.
+    static func standardized(_ path: String) -> String {
+        guard path.hasPrefix("/") else { return path }
+
+        var components: [String] = []
+        for component in path.split(separator: "/") {
+            switch component {
+            case ".":
+                continue
+            case "..":
+                if !components.isEmpty {
+                    components.removeLast()
+                }
+            default:
+                components.append(String(component))
+            }
+        }
+        return "/" + components.joined(separator: "/")
+    }
+
+    static func parent(of path: String) -> String {
+        var components = standardized(path).split(separator: "/").map(String.init)
+        guard !components.isEmpty else { return "/" }
+        components.removeLast()
+        return "/" + components.joined(separator: "/")
+    }
+
+    static func appending(_ name: String, to path: String) -> String {
+        let base = standardized(path)
+        return base == "/" ? "/" + name : base + "/" + name
+    }
+
+    /// Whether `path` is `root` or sits underneath it. Both sides are
+    /// standardized first so `/srv/data/../data/x` is recognised as inside
+    /// `/srv/data`.
+    static func isDescendant(_ path: String, of root: String) -> Bool {
+        let root = standardized(root)
+        let target = standardized(path)
+        guard root.hasPrefix("/"), target.hasPrefix("/") else { return false }
+        if root == "/" { return true }
+        return target == root || target.hasPrefix(root + "/")
+    }
+}

@@ -30,12 +30,13 @@ class FileListViewModel: ObservableObject {
 
     var remoteRoot: String {
         guard let root = ssh?.server.remoteRoot else { return "/" }
-        return (root as NSString).standardizingPath
+        return RemotePath.standardized(root)
     }
 
     var canGoToParent: Bool {
-        let parent = (currentPath as NSString).deletingLastPathComponent
-        return parent != currentPath && isPathAllowed(parent)
+        let current = RemotePath.standardized(currentPath)
+        let parent = RemotePath.parent(of: current)
+        return parent != current && isPathAllowed(parent)
     }
 
     func connect(server: Server) async {
@@ -121,8 +122,9 @@ class FileListViewModel: ObservableObject {
     }
 
     func goToParent() async {
-        let parent = (currentPath as NSString).deletingLastPathComponent
-        guard parent != currentPath, isPathAllowed(parent) else { return }
+        let current = RemotePath.standardized(currentPath)
+        let parent = RemotePath.parent(of: current)
+        guard parent != current, isPathAllowed(parent) else { return }
         await navigateTo(path: parent)
     }
 
@@ -215,7 +217,7 @@ class FileListViewModel: ObservableObject {
                 finalErrors.append("対象が許可範囲外です: \(file.path)")
                 continue
             }
-            let destinationPath = (destination as NSString).appendingPathComponent(file.name)
+            let destinationPath = RemotePath.appending(file.name, to: destination)
             do {
                 waitIDs.append(try await sftp.addToQueue(type: type, src: file.path, dst: destinationPath))
             } catch {
@@ -330,18 +332,14 @@ class FileListViewModel: ObservableObject {
 
     private func isPathAllowed(_ path: String) -> Bool {
         guard ssh != nil else { return false }
-        let root = remoteRoot
-        let target = (path as NSString).standardizingPath
-        guard root.hasPrefix("/"), target.hasPrefix("/") else { return false }
-        if root == "/" { return true }
-        return target == root || target.hasPrefix(root + "/")
+        return RemotePath.isDescendant(path, of: remoteRoot)
     }
 
     private func childPath(named name: String) -> String? {
         guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
             return nil
         }
-        let path = (currentPath as NSString).appendingPathComponent(name)
+        let path = RemotePath.appending(name, to: currentPath)
         return isPathAllowed(path) ? path : nil
     }
 

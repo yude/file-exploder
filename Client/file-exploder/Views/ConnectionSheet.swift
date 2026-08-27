@@ -137,7 +137,9 @@ struct ConnectionSheet: View {
     
     private func save() {
         if let portInt = validPort {
-            let normalizedRoot = (trimmedRoot as NSString).standardizingPath
+            // The root lives on the server; the key path is local, so only the
+            // latter may be standardized against this machine's filesystem.
+            let normalizedRoot = RemotePath.standardized(trimmedRoot)
             let trimmedKeyPath = keyPath.trimmingCharacters(in: .whitespacesAndNewlines)
             let normalizedKeyPath = trimmedKeyPath.isEmpty ? nil : (trimmedKeyPath as NSString).standardizingPath
             let newServer = Server(
