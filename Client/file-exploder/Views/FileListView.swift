@@ -70,7 +70,7 @@ struct FileListView: View {
                     Text(error)
                         .foregroundColor(.secondary)
                     Button("再試行") {
-                        Task { await viewModel.refresh() }
+                        Task { await viewModel.reload() }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -237,7 +237,7 @@ struct FileListView: View {
             .help("新規フォルダ")
             .disabled(!viewModel.hasConnection)
             
-            Button(action: { Task { await viewModel.refresh() } }) {
+            Button(action: { Task { await viewModel.reload() } }) {
                 Image(systemName: "arrow.clockwise")
             }
             .buttonStyle(.borderless)

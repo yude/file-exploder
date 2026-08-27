@@ -17,6 +17,9 @@ class FileListViewModel: ObservableObject {
     private var settingsObserver: NSObjectProtocol?
     private var lastAppliedSettings: Settings?
 
+    /// See `ErrorLog` for why operation and listing errors are tracked apart.
+    private var errorLog = ErrorLog()
+
     /// A queued job plus the display name it came from, so a failure that only
     /// surfaces while waiting can still say which file it was about.
     private struct QueuedOperation {
@@ -108,13 +111,15 @@ class FileListViewModel: ObservableObject {
         currentPath = "/"
         pathHistory = []
         pathHistoryIndex = -1
+        errorLog.removeAll()
         errorMessage = nil
         isLoading = false
     }
 
     func navigateTo(path: String) async {
+        clearOperationErrors()
         guard isPathAllowed(path) else {
-            errorMessage = "アクセスが許可されていません"
+            reportOperationError("アクセスが許可されていません")
             return
         }
         if await loadPath(path, updateHistory: true) {
@@ -123,6 +128,7 @@ class FileListViewModel: ObservableObject {
     }
 
     func goBack() async {
+        clearOperationErrors()
         guard canGoBack else { return }
         let newIndex = pathHistoryIndex - 1
         if await loadPath(pathHistory[newIndex], updateHistory: false) {
@@ -132,6 +138,7 @@ class FileListViewModel: ObservableObject {
     }
 
     func goForward() async {
+        clearOperationErrors()
         guard canGoForward else { return }
         let newIndex = pathHistoryIndex + 1
         if await loadPath(pathHistory[newIndex], updateHistory: false) {
@@ -153,6 +160,14 @@ class FileListViewModel: ObservableObject {
         }
     }
 
+    /// The refresh the user asks for. Unlike the background and follow-up
+    /// refreshes it drops the accumulated operation errors, so retrying visibly
+    /// clears them when it works.
+    func reload() async {
+        clearOperationErrors()
+        await refresh()
+    }
+
     func openFile(_ file: RemoteFile) async {
         if file.isDirectory {
             await navigateTo(path: file.path)
@@ -161,11 +176,11 @@ class FileListViewModel: ObservableObject {
 
     func createFolder(name: String) async {
         guard let sftp else {
-            errorMessage = "サーバーに接続されていません"
+            reportOperationError("サーバーに接続されていません")
             return
         }
         guard let newPath = childPath(named: name) else {
-            errorMessage = "フォルダ名に /、.、.. は使用できません"
+            reportOperationError("フォルダ名に /、.、.. は使用できません")
             return
         }
         var finalError: String?
@@ -207,7 +222,7 @@ class FileListViewModel: ObservableObject {
     func renameFile(_ file: RemoteFile, to newName: String) async {
         guard let sftp else { return }
         guard isPathAllowed(file.path), let newPath = childPath(named: newName) else {
-            errorMessage = "名前に /、.、.. は使用できません"
+            reportOperationError("名前に /、.、.. は使用できません")
             return
         }
         var finalError: String?
@@ -231,7 +246,7 @@ class FileListViewModel: ObservableObject {
     private func transferFiles(_ files: [RemoteFile], to destination: String, type: String) async {
         guard let sftp else { return }
         guard isPathAllowed(destination) else {
-            errorMessage = type == "copy" ? "複製先が許可範囲外です" : "移動先が許可範囲外です"
+            reportOperationError(type == "copy" ? "複製先が許可範囲外です" : "移動先が許可範囲外です")
             return
         }
         var queued: [QueuedOperation] = []
@@ -289,14 +304,15 @@ class FileListViewModel: ObservableObject {
     @discardableResult
     private func loadPath(_ path: String, updateHistory: Bool) async -> Bool {
         guard let sftp, isPathAllowed(path) else {
-            if self.sftp != nil { errorMessage = "アクセスが許可されていません" }
+            if self.sftp != nil { reportOperationError("アクセスが許可されていません") }
             return false
         }
 
         navigationGeneration += 1
         let currentGeneration = navigationGeneration
         isLoading = true
-        errorMessage = nil
+        errorLog.setListingError(nil)
+        publishErrors()
         do {
             let fileList = try await sftp.listDirectory(path: path)
             guard currentGeneration == navigationGeneration else { return false }
@@ -313,7 +329,8 @@ class FileListViewModel: ObservableObject {
             files = sortedVisibleFiles(fileList)
         } catch {
             guard currentGeneration == navigationGeneration else { return false }
-            errorMessage = error.localizedDescription
+            errorLog.setListingError(error.localizedDescription)
+            publishErrors()
             isLoading = false
             return false
         }
@@ -378,13 +395,23 @@ class FileListViewModel: ObservableObject {
         return isPathAllowed(path) ? path : nil
     }
 
-    private func refreshThenReport(_ operationErrors: [String]) async {
+    private func refreshThenReport(_ newErrors: [String]) async {
+        errorLog.addOperationErrors(newErrors)
         await refresh()
-        guard !operationErrors.isEmpty else { return }
-        var errors = operationErrors
-        if let refreshError = errorMessage {
-            errors.append("一覧更新エラー: \(refreshError)")
-        }
-        errorMessage = errors.joined(separator: "\n")
+        publishErrors()
+    }
+
+    private func reportOperationError(_ message: String) {
+        errorLog.addOperationError(message)
+        publishErrors()
+    }
+
+    private func clearOperationErrors() {
+        errorLog.clearOperationErrors()
+        publishErrors()
+    }
+
+    private func publishErrors() {
+        errorMessage = errorLog.message
     }
 }

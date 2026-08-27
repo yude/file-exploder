@@ -38,3 +38,51 @@ final class ShellEscapingTests: XCTestCase {
         XCTAssertEqual("a'b".shellEscaped, "'a'\\''b'")
     }
 }
+
+final class ErrorLogTests: XCTestCase {
+    func testNothingReportedWhenEmpty() {
+        XCTAssertNil(ErrorLog().message)
+    }
+
+    func testListingErrorReadsOnItsOwn() {
+        var log = ErrorLog()
+        log.setListingError("接続できません")
+        XCTAssertEqual(log.message, "接続できません")
+    }
+
+    /// The regression this split exists for: a listing that happens while an
+    /// operation error is on screen must not take it away. Two overlapping
+    /// operations both refresh, and every refresh replaces the listing error.
+    func testAListingDoesNotDropOperationErrors() {
+        var log = ErrorLog()
+        log.addOperationError("削除エラー (a.txt)")
+
+        log.setListingError(nil)
+        XCTAssertEqual(log.message, "削除エラー (a.txt)")
+
+        log.setListingError("一覧が取得できません")
+        XCTAssertEqual(log.message, "削除エラー (a.txt)\n一覧更新エラー: 一覧が取得できません")
+
+        log.setListingError(nil)
+        XCTAssertEqual(log.message, "削除エラー (a.txt)")
+    }
+
+    func testConcurrentOperationsBothGetReported() {
+        var log = ErrorLog()
+        log.addOperationErrors(["削除エラー (a.txt)"])
+        log.addOperationErrors(["名前変更エラー (b.txt)"])
+        XCTAssertEqual(log.message, "削除エラー (a.txt)\n名前変更エラー (b.txt)")
+    }
+
+    func testOperationErrorsAreRetiredDeliberately() {
+        var log = ErrorLog()
+        log.addOperationError("削除エラー (a.txt)")
+        log.setListingError("一覧が取得できません")
+
+        log.clearOperationErrors()
+        XCTAssertEqual(log.message, "一覧が取得できません")
+
+        log.removeAll()
+        XCTAssertNil(log.message)
+    }
+}
