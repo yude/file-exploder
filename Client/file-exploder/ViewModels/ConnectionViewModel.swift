@@ -71,7 +71,10 @@ class ConnectionViewModel: ObservableObject {
         // details is misleading and can send operations to the wrong host.
         if let active = activeServerSnapshot,
            stored.first(where: { $0.id == active.id }) != active {
-            disconnectActiveSession()
+            let reason = stored.contains(where: { $0.id == active.id })
+                ? "接続中のサーバー設定が別のウィンドウで変更されたため切断しました"
+                : "接続中のサーバーが別のウィンドウで削除されたため切断しました"
+            disconnectActiveSession(reason: reason)
         }
     }
     
@@ -149,8 +152,13 @@ class ConnectionViewModel: ObservableObject {
         activeServerSnapshot = nil
     }
 
-    private func disconnectActiveSession() {
+    /// `reason` is surfaced when the session ended on its own - a deliberate
+    /// delete already speaks for itself and would only add noise.
+    private func disconnectActiveSession(reason: String? = nil) {
         activeFileListVM?.disconnect()
         disconnect()
+        if let reason {
+            connectionError = reason
+        }
     }
 }
