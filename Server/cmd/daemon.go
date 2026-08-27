@@ -62,7 +62,11 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	interrupted, err := q.ResetRunningJobs()
 	if err != nil {
-		logger.Printf("Failed to reset running jobs: %v", err)
+		// Worth spelling out: jobs left running by the previous daemon then stay
+		// running. Nothing picks them up, cancel refuses them, and the client's
+		// dead-queue detection keeps seeing something "running" forever, so it
+		// waits on operations that will never finish.
+		logger.Printf("Failed to reset running jobs, so any job interrupted by the previous daemon stays stuck: %v", err)
 	}
 	for _, job := range interrupted {
 		removed, err := executor.RemoveOrphanedStaging(job)

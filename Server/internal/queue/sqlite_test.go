@@ -2,6 +2,7 @@ package queue
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -308,5 +309,63 @@ func TestJobsWithNullOptionalColumnsStillScan(t *testing.T) {
 	}
 	if len(pending) != 1 {
 		t.Fatalf("GetPendingJobs returned %d jobs", len(pending))
+	}
+}
+
+func TestResetRunningJobsSurvivesAConcurrentWriter(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	sweeper, err := NewSQLiteQueue(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sweeper.Close() })
+	writer, err := NewSQLiteQueue(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+
+	// The daemon's startup sweep reads the running jobs and then fails them.
+	// While a deferred transaction was used, any write committed between those
+	// two steps killed the whole sweep instantly - busy_timeout does not cover
+	// the promotion - leaving interrupted jobs stuck 'running' for the life of
+	// the daemon and their staging unreclaimed.
+	done := make(chan struct{})
+	stop := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = writer.AddJob(&Job{
+				ID:        fmt.Sprintf("noise-%d", i),
+				Type:      JobDelete,
+				SrcPath:   "/tmp/x",
+				Status:    StatusPending,
+				CreatedAt: time.Now().UTC(),
+			})
+		}
+	}()
+	t.Cleanup(func() { close(stop); <-done })
+
+	for attempt := 0; attempt < 200; attempt++ {
+		id := fmt.Sprintf("interrupted-%d", attempt)
+		if err := sweeper.AddJob(&Job{ID: id, Type: JobCopy, DstPath: "/tmp/dst", Status: StatusPending, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+		if started, err := sweeper.StartJob(id); err != nil || !started {
+			t.Fatalf("attempt %d: StartJob = %v, %v", attempt, started, err)
+		}
+
+		interrupted, err := sweeper.ResetRunningJobs()
+		if err != nil {
+			t.Fatalf("attempt %d: ResetRunningJobs failed with a writer active: %v", attempt, err)
+		}
+		if len(interrupted) != 1 || interrupted[0].ID != id {
+			t.Fatalf("attempt %d: swept %#v", attempt, interrupted)
+		}
 	}
 }

@@ -24,9 +24,15 @@ type SQLiteQueue struct {
 // with a fresh empty queue. The file: URI form percent-encodes the path.
 func sqliteDSN(dbPath string) string {
 	dsn := url.URL{
-		Scheme:   "file",
-		Path:     dbPath,
-		RawQuery: "_journal_mode=WAL&_busy_timeout=5000",
+		Scheme: "file",
+		Path:   dbPath,
+		// _txlock=immediate takes the write lock when a transaction opens
+		// instead of promoting a read transaction to a write one. Promotion
+		// fails with SQLITE_BUSY_SNAPSHOT if anything committed since the read
+		// began, and SQLite deliberately does not invoke the busy handler for
+		// that - so _busy_timeout does not apply and the transaction dies
+		// immediately rather than waiting its turn.
+		RawQuery: "_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate",
 	}
 	return dsn.String()
 }
