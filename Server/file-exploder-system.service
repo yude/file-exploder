@@ -1,0 +1,18 @@
+[Unit]
+Description=FileExploder - Remote File Operation Queue Manager (root)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=HOME=/root
+ExecStart=/usr/local/bin/file-exploder daemon
+Restart=on-failure
+RestartSec=5
+# No UMask here on purpose. The queue directory, log and lock file all set
+# their own modes explicitly, while directories the daemon creates should
+# retain the system's default permissions.
+
+[Install]
+WantedBy=multi-user.target

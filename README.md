@@ -39,10 +39,16 @@ chmod +x install.sh
 ```
 
 The installer must be run as the same Linux user used by the macOS client's
-SSH connection. It installs the binary in `~/.local/bin` and a per-user systemd
-service, so the CLI and daemon share both filesystem permissions and the same
-queue database. Go 1.26.7 or newer is required to avoid known standard-library
-vulnerabilities. Do not run it with `sudo`.
+SSH connection, so the CLI and daemon share both filesystem permissions and
+the same queue database. Go 1.26.7 or newer is required to avoid known
+standard-library vulnerabilities.
+
+- As a regular SSH user (recommended), it installs to `~/.local/bin` and
+  creates a per-user systemd service.
+- As `root`, it installs to `/usr/local/bin` and creates the system service
+  `/etc/systemd/system/file-exploder.service`. Use this mode only when the
+  macOS client also connects as `root`. The daemon then has unrestricted access
+  to the server filesystem, and its queue lives under `/root/.file-exploder`.
 
 To keep the service running after that user logs out, an administrator can run:
 
@@ -50,9 +56,11 @@ To keep the service running after that user logs out, an administrator can run:
 sudo loginctl enable-linger <ssh-user>
 ```
 
-Check it with `systemctl --user status file-exploder`. The client's configured
-remote root is a navigation boundary, not an operating-system sandbox; the
-daemon has exactly the access rights of the SSH user.
+Check a regular-user installation with
+`systemctl --user status file-exploder`, or a root installation with
+`systemctl status file-exploder`. The client's configured remote root is a
+navigation boundary, not an operating-system sandbox; the daemon has exactly
+the access rights of the SSH user.
 
 Every command writes JSON to stdout and errors to stderr, so the client can
 parse results without screen-scraping. Queue state lives in
