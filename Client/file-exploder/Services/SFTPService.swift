@@ -72,15 +72,30 @@ class SFTPService {
         return try parseJSON(data, type: QueueJob.self)
     }
     
-    /// Wait for a queued operation. With no timeout, polling ends on completion,
-    /// an SSH failure, or task cancellation; long-running copies are not reported
-    /// as failed merely because they exceeded an arbitrary UI deadline.
+    /// How long a job may sit pending, with nothing else running, before the
+    /// queue is treated as stalled.
+    private static let stalledQueueGracePeriod: TimeInterval = 30
+
+    /// Wait for a queued operation. Once a job is running the wait is unbounded:
+    /// a large copy legitimately takes minutes and must not be reported as
+    /// failed for missing an arbitrary UI deadline.
+    ///
+    /// A job that never even starts is a different story. If the daemon is not
+    /// running - the case the README's `loginctl enable-linger` note is about -
+    /// the job stays pending forever and every operation used to hang behind a
+    /// spinner with nothing to act on. Give up only once the job has waited out
+    /// the grace period *and* the server reports nothing running at all, twice
+    /// in a row, so a busy queue is never mistaken for a dead one.
     func waitForJob(id: String, timeout: TimeInterval? = nil) async throws {
         let start = Date()
         // Every poll opens its own SSH connection, so start snappy for the
         // common quick operation and back off for copies that run for minutes.
         var pollInterval: UInt64 = 300_000_000
         let maxPollInterval: UInt64 = 3_000_000_000
+        var pendingSince = Date()
+        var everStarted = false
+        var stalledObservations = 0
+
         while timeout == nil || Date().timeIntervalSince(start) < timeout! {
             try Task.checkCancellation()
             let job = try await getJobStatus(id: id)
@@ -91,13 +106,32 @@ class SFTPService {
                 throw QueueError.invalidResponse(job.error ?? "Unknown error")
             case .cancelled:
                 throw QueueError.invalidResponse("ジョブがキャンセルされました")
-            case .pending, .running:
-                break
+            case .running:
+                everStarted = true
+            case .pending:
+                if !everStarted, Date().timeIntervalSince(pendingSince) > Self.stalledQueueGracePeriod {
+                    if try await queueIsMoving() {
+                        pendingSince = Date()
+                        stalledObservations = 0
+                    } else {
+                        stalledObservations += 1
+                        if stalledObservations >= 2 {
+                            throw QueueError.invalidResponse(
+                                "ジョブが開始されないままです。サーバーで file-exploder デーモンが動作しているか確認してください "
+                                + "(systemctl --user status file-exploder)。ジョブはキューに残っています。"
+                            )
+                        }
+                    }
+                }
             }
             try await Task.sleep(nanoseconds: pollInterval)
             pollInterval = min(pollInterval * 2, maxPollInterval)
         }
         throw QueueError.invalidResponse("処理がタイムアウトしました。ジョブ画面で状態を確認してください")
+    }
+
+    private func queueIsMoving() async throws -> Bool {
+        try await getQueueStatus().contains { $0.status == .running }
     }
     
     /// Cancel a queue job
