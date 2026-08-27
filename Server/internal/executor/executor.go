@@ -220,6 +220,14 @@ func copyPath(src, dst string) error {
 	return copyFile(src, dst)
 }
 
+// copyableMode is the part of a mode a copy reproduces: the permission bits
+// plus setuid, setgid and sticky. Mode().Perm() alone masks to 0777 and silently
+// dropped the three special bits, so a setgid directory stopped granting its
+// group to new files and a setuid binary came back unprivileged.
+func copyableMode(mode os.FileMode) os.FileMode {
+	return mode & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
+}
+
 func copyFile(src, dst string) error {
 	srcInfo, err := os.Lstat(src)
 	if err != nil {
@@ -281,11 +289,11 @@ func copyFile(src, dst string) error {
 		_ = dstFile.Close()
 		_ = os.Remove(dstTmp)
 	}()
-	if err := dstFile.Chmod(srcInfo.Mode().Perm()); err != nil {
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
 		return err
 	}
-
-	if _, err := io.Copy(dstFile, srcFile); err != nil {
+	// After the copy, not before: writing to a file can clear setuid and setgid.
+	if err := dstFile.Chmod(copyableMode(srcInfo.Mode())); err != nil {
 		return err
 	}
 	if err := dstFile.Sync(); err != nil {
@@ -350,7 +358,7 @@ func copyDir(src, dst string) error {
 	}
 	for i := len(directories) - 1; i >= 0; i-- {
 		directory := directories[i]
-		if err := os.Chmod(directory.path, directory.info.Mode().Perm()); err != nil {
+		if err := os.Chmod(directory.path, copyableMode(directory.info.Mode())); err != nil {
 			return err
 		}
 		if err := os.Chtimes(directory.path, directory.info.ModTime(), directory.info.ModTime()); err != nil {

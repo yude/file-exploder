@@ -546,3 +546,46 @@ func TestChmodStillRefusesASymlinkSpelledWithATrailingSeparator(t *testing.T) {
 		t.Fatalf("symlink target widened to %o", info.Mode().Perm())
 	}
 }
+
+func TestCopyPreservesSetuidSetgidAndSticky(t *testing.T) {
+	dir := t.TempDir()
+
+	src := filepath.Join(dir, "binary")
+	if err := os.WriteFile(src, []byte("content"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(src, 0755|os.ModeSetuid|os.ModeSetgid); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyPath(src, filepath.Join(dir, "binary-copy")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(filepath.Join(dir, "binary-copy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := copyableMode(info.Mode()); got != 0755|os.ModeSetuid|os.ModeSetgid {
+		t.Errorf("file copy mode = %v, want setuid+setgid 0755", got)
+	}
+
+	srcDir := filepath.Join(dir, "tree")
+	if err := os.Mkdir(srcDir, 0775); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "inner"), []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(srcDir, 0775|os.ModeSetgid|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyPath(srcDir, filepath.Join(dir, "tree-copy")); err != nil {
+		t.Fatal(err)
+	}
+	dirInfo, err := os.Lstat(filepath.Join(dir, "tree-copy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := copyableMode(dirInfo.Mode()); got != 0775|os.ModeSetgid|os.ModeSticky {
+		t.Errorf("directory copy mode = %v, want setgid+sticky 0775", got)
+	}
+}
