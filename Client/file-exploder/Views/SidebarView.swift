@@ -5,6 +5,7 @@ struct SidebarView: View {
     @ObservedObject var fileListVM: FileListViewModel
     @State private var showAddServer = false
     @State private var editingServer: Server?
+    @State private var serverPendingDeletion: Server?
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -38,10 +39,7 @@ struct SidebarView: View {
                             editingServer = server
                         },
                         onDelete: {
-                            if connectionVM.activeServerID == server.id {
-                                fileListVM.disconnect()
-                            }
-                            connectionVM.deleteServer(server)
+                            serverPendingDeletion = server
                         }
                     )
                 }
@@ -75,6 +73,30 @@ struct SidebarView: View {
         }
         .sheet(item: $editingServer) { server in
             ConnectionSheet(connectionVM: connectionVM, fileListVM: fileListVM, server: server)
+        }
+        .confirmationDialog(
+            "サーバー設定を削除しますか？",
+            isPresented: Binding(
+                get: { serverPendingDeletion != nil },
+                set: { presented in
+                    if !presented { serverPendingDeletion = nil }
+                }
+            ),
+            titleVisibility: .visible,
+            presenting: serverPendingDeletion
+        ) { server in
+            Button("削除", role: .destructive) {
+                if connectionVM.activeServerID == server.id {
+                    fileListVM.disconnect()
+                }
+                connectionVM.deleteServer(server)
+                serverPendingDeletion = nil
+            }
+            Button("キャンセル", role: .cancel) {
+                serverPendingDeletion = nil
+            }
+        } message: { server in
+            Text("\(server.name) (\(server.username)@\(server.hostname)) の接続設定を削除します。サーバー上のファイルは削除されません。")
         }
     }
 }
