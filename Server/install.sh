@@ -12,6 +12,19 @@ if [ "$EUID" -eq 0 ]; then
     exit 1
 fi
 
+if ! command -v go >/dev/null 2>&1; then
+    echo "Go is required to build file-exploder but was not found in PATH." >&2
+    echo "Install it from https://go.dev/dl/ and re-run this script." >&2
+    exit 1
+fi
+
+if ! systemctl --user show-environment >/dev/null 2>&1; then
+    echo "No systemd user session is available for $(whoami)." >&2
+    echo "Log in over SSH as this user (or ask an administrator to run" >&2
+    echo "'loginctl enable-linger $(whoami)') and re-run this script." >&2
+    exit 1
+fi
+
 INSTALL_DIR="$HOME/.local/bin"
 SERVICE_DIR="$HOME/.config/systemd/user"
 mkdir -p "$INSTALL_DIR"
