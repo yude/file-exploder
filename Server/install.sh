@@ -18,6 +18,14 @@ if ! command -v go >/dev/null 2>&1; then
     exit 1
 fi
 
+REQUIRED_GO_VERSION="1.26.7"
+INSTALLED_GO_VERSION="$(go env GOVERSION | sed 's/^go//')"
+if [ "$(printf '%s\n%s\n' "$REQUIRED_GO_VERSION" "$INSTALLED_GO_VERSION" | sort -V | head -n1)" != "$REQUIRED_GO_VERSION" ]; then
+    echo "Go $REQUIRED_GO_VERSION or newer is required; found Go $INSTALLED_GO_VERSION." >&2
+    echo "Update Go from https://go.dev/dl/ and re-run this script." >&2
+    exit 1
+fi
+
 if ! systemctl --user show-environment >/dev/null 2>&1; then
     echo "No systemd user session is available for $(whoami)." >&2
     echo "Log in over SSH as this user (or ask an administrator to run" >&2

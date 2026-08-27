@@ -41,7 +41,8 @@ chmod +x install.sh
 The installer must be run as the same Linux user used by the macOS client's
 SSH connection. It installs the binary in `~/.local/bin` and a per-user systemd
 service, so the CLI and daemon share both filesystem permissions and the same
-queue database. Do not run it with `sudo`.
+queue database. Go 1.26.7 or newer is required to avoid known standard-library
+vulnerabilities. Do not run it with `sudo`.
 
 To keep the service running after that user logs out, an administrator can run:
 
