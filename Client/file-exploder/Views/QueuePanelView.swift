@@ -6,6 +6,10 @@ struct QueuePanelView: View {
     @State private var isLoading = false
     @State private var isRefreshing = false
     @State private var errorMessage: String?
+    /// Kept apart from errorMessage: a failed action is the user's own doing and
+    /// must survive the next poll, which clears the polling error every two
+    /// seconds. It also shows above the list rather than replacing it.
+    @State private var actionError: String?
     @State private var selectedTab = 0
     
     let sftp: SFTPService?
@@ -17,7 +21,10 @@ struct QueuePanelView: View {
                 Text("ジョブ")
                     .font(.headline)
                 Spacer()
-                Button(action: { Task { await refresh() } }) {
+                Button(action: {
+                    actionError = nil
+                    Task { await refresh() }
+                }) {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
@@ -34,7 +41,25 @@ struct QueuePanelView: View {
             .padding(.bottom, 8)
             
             Divider()
-            
+
+            if let actionError {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text(actionError)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Spacer(minLength: 0)
+                    Button(action: { self.actionError = nil }) {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+                Divider()
+            }
+
             let displayJobs = selectedTab == 0 ? activeJobs.filter { $0.status == .pending || $0.status == .running } : logJobs
             
             if isLoading {
@@ -66,7 +91,7 @@ struct QueuePanelView: View {
                     QueueJobRow(job: job, sftp: sftp, onRefresh: {
                         Task { await refresh() }
                     }, onError: { message in
-                        errorMessage = message
+                        actionError = message
                     })
                 }
                 .listStyle(.plain)
