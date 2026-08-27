@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/yude/file-exploder/server/internal/config"
+	"github.com/yude/file-exploder/server/internal/executor"
 	"github.com/yude/file-exploder/server/internal/queue"
 )
 
@@ -61,9 +61,10 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		if addDst == "" || addMode == "" {
 			return fmt.Errorf("both --dst and --mode are required for chmod")
 		}
-		mode, err := strconv.ParseUint(addMode, 8, 12)
-		if err != nil || len(addMode) == 0 || len(addMode) > 4 || mode > 0777 {
-			return fmt.Errorf("invalid mode format: %s", addMode)
+		// Reject a bad mode here so it never reaches the queue, using the same
+		// parser the executor will apply.
+		if _, err := executor.ParseFileMode(addMode); err != nil {
+			return err
 		}
 	}
 	for _, path := range []string{addSrc, addDst} {

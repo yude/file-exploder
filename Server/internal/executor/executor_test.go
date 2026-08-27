@@ -125,13 +125,13 @@ func TestCopyDoesNotCreateMissingParents(t *testing.T) {
 
 func TestParseFileMode(t *testing.T) {
 	for _, valid := range []string{"0", "600", "0755"} {
-		if _, err := parseFileMode(valid); err != nil {
-			t.Errorf("parseFileMode(%q): %v", valid, err)
+		if _, err := ParseFileMode(valid); err != nil {
+			t.Errorf("ParseFileMode(%q): %v", valid, err)
 		}
 	}
 	for _, invalid := range []string{"", "888", "755junk", "4755"} {
-		if _, err := parseFileMode(invalid); err == nil {
-			t.Errorf("parseFileMode(%q) unexpectedly succeeded", invalid)
+		if _, err := ParseFileMode(invalid); err == nil {
+			t.Errorf("ParseFileMode(%q) unexpectedly succeeded", invalid)
 		}
 	}
 }

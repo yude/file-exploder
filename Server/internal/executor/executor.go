@@ -124,7 +124,7 @@ func (e *Executor) executeChmod(job *queue.Job) error {
 	if job.Mode == "" {
 		return fmt.Errorf("mode is required for chmod")
 	}
-	mode, err := parseFileMode(job.Mode)
+	mode, err := ParseFileMode(job.Mode)
 	if err != nil {
 		return err
 	}
@@ -395,7 +395,8 @@ func pathWithin(parent, child string) (bool, error) {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))), nil
 }
 
-func parseFileMode(s string) (os.FileMode, error) {
+// ParseFileMode parses an octal chmod argument such as "755" or "0644".
+func ParseFileMode(s string) (os.FileMode, error) {
 	if len(s) == 0 || len(s) > 4 {
 		return 0, fmt.Errorf("invalid file mode length: %s", s)
 	}
