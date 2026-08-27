@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -66,6 +67,14 @@ func runList(cmd *cobra.Command, args []string) error {
 }
 
 func listDirectory(target string) ([]FileInfo, error) {
+	// Entry names are checked below, but every path in the response is built by
+	// joining them onto this target - so an unrepresentable target alone is
+	// enough to hand the client the U+FFFD alias this guard exists to prevent.
+	// stat already refuses such a path; list has to agree.
+	if !utf8.ValidString(target) {
+		return nil, fmt.Errorf("path cannot be represented safely as UTF-8")
+	}
+
 	entries, err := os.ReadDir(target)
 	if err != nil {
 		return nil, err

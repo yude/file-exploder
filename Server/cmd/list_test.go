@@ -71,3 +71,20 @@ func TestListDirectorySkipsNamesThatAreNotUTF8(t *testing.T) {
 		t.Fatalf("invalid UTF-8 entry was exposed as %#v", entries)
 	}
 }
+
+func TestListDirectoryRejectsATargetThatIsNotUTF8(t *testing.T) {
+	tmpDir := t.TempDir()
+	// The entry is perfectly representable; the directory holding it is not,
+	// and every path in the response is built by joining onto it.
+	target := filepath.Join(tmpDir, string([]byte{0xff, 0xfe}))
+	if err := os.Mkdir(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "normal.txt"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := listDirectory(target); err == nil {
+		t.Fatal("listing an unrepresentable directory unexpectedly succeeded")
+	}
+}
