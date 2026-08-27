@@ -455,3 +455,94 @@ func TestRemoveOrphanedStagingIgnoresJobsThatNeverStage(t *testing.T) {
 		t.Fatalf("staging removed for a job type that never stages: %v", err)
 	}
 }
+
+func TestOperationsAcceptATrailingSeparatorOnPaths(t *testing.T) {
+	e := NewExecutor(nil)
+	sep := string(filepath.Separator)
+
+	t.Run("copy file", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "source")
+		if err := os.WriteFile(src, []byte("content"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Execute(&queue.Job{Type: queue.JobCopy, SrcPath: src, DstPath: filepath.Join(dir, "copy") + sep}); err != nil {
+			t.Fatalf("copy failed: %v", err)
+		}
+		if data, err := os.ReadFile(filepath.Join(dir, "copy")); err != nil || string(data) != "content" {
+			t.Fatalf("copy = %q, %v", data, err)
+		}
+	})
+
+	t.Run("copy directory", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "source")
+		if err := os.Mkdir(src, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(src, "inner"), []byte("content"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Execute(&queue.Job{Type: queue.JobCopy, SrcPath: src + sep, DstPath: filepath.Join(dir, "copy") + sep}); err != nil {
+			t.Fatalf("copy failed: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "copy", "inner")); err != nil {
+			t.Fatalf("directory copy incomplete: %v", err)
+		}
+	})
+
+	t.Run("move file", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "source")
+		if err := os.WriteFile(src, []byte("content"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Execute(&queue.Job{Type: queue.JobMove, SrcPath: src, DstPath: filepath.Join(dir, "moved") + sep}); err != nil {
+			t.Fatalf("move failed: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "moved")); err != nil {
+			t.Fatalf("move did not land: %v", err)
+		}
+	})
+
+	t.Run("chmod file", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "target")
+		if err := os.WriteFile(target, []byte("content"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Execute(&queue.Job{Type: queue.JobChmod, DstPath: target + sep, Mode: "0644"}); err != nil {
+			t.Fatalf("chmod failed: %v", err)
+		}
+		info, err := os.Stat(target)
+		if err != nil || info.Mode().Perm() != 0644 {
+			t.Fatalf("mode = %v, %v", info.Mode().Perm(), err)
+		}
+	})
+}
+
+func TestChmodStillRefusesASymlinkSpelledWithATrailingSeparator(t *testing.T) {
+	e := NewExecutor(nil)
+	dir := t.TempDir()
+	target := filepath.Join(dir, "realdir")
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	// A trailing separator forces the kernel to resolve the path as a directory,
+	// which used to make Lstat report the target and let the job widen it.
+	if err := e.Execute(&queue.Job{Type: queue.JobChmod, DstPath: link + string(filepath.Separator), Mode: "0777"}); err == nil {
+		t.Fatal("chmod through a trailing-separator symlink unexpectedly succeeded")
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0700 {
+		t.Fatalf("symlink target widened to %o", info.Mode().Perm())
+	}
+}

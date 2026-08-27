@@ -26,6 +26,25 @@ func NewExecutor(q queue.Queue) *Executor {
 }
 
 func (e *Executor) Execute(job *queue.Job) error {
+	// Every operation works on cleaned paths. filepath.Dir("/a/b/") is "/a/b",
+	// so a trailing separator made every parent-directory computation point at
+	// the destination itself: copy and move failed with "no such file or
+	// directory" naming the very path they had been asked to create. Worse, a
+	// trailing separator forces the kernel to resolve the path as a directory,
+	// so os.Lstat reported the *target* of a symlink - which walked straight
+	// past executeChmod's refusal to chmod a link and changed the target's mode
+	// instead.
+	//
+	// Normalise on a copy so the queue's own record of the job is left alone.
+	normalized := *job
+	if normalized.SrcPath != "" {
+		normalized.SrcPath = filepath.Clean(normalized.SrcPath)
+	}
+	if normalized.DstPath != "" {
+		normalized.DstPath = filepath.Clean(normalized.DstPath)
+	}
+	job = &normalized
+
 	switch job.Type {
 	case queue.JobRename, queue.JobMove:
 		return e.executeRename(job)
@@ -121,13 +140,8 @@ func (e *Executor) executeMkdir(job *queue.Job) error {
 	// Create parents separately and use Mkdir for the leaf. A preflight Lstat
 	// followed by MkdirAll has a race: another process can create the leaf in
 	// between, after which MkdirAll reports success and this job incorrectly
-	// claims it created the directory.
-	//
-	// Clean first: filepath.Dir("/a/b/") is "/a/b", so a trailing separator
-	// would make MkdirAll create the leaf as if it were the parent and Mkdir
-	// then fail with "already exists" - against a directory this job had just
-	// created itself.
-	dst := filepath.Clean(job.DstPath)
+	// claims it created the directory. Execute has already cleaned the path.
+	dst := job.DstPath
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return err
 	}
