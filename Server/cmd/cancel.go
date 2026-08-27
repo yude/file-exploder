@@ -1,7 +1,8 @@
 package cmd
 
 import (
-	"fmt"
+	"encoding/json"
+	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/yude/file-exploder/server/internal/config"
@@ -35,6 +36,9 @@ func runCancel(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Job %s cancelled\n", args[0])
-	return nil
+	enc := json.NewEncoder(os.Stdout)
+	return enc.Encode(map[string]string{
+		"id":     args[0],
+		"status": string(queue.StatusCancelled),
+	})
 }
