@@ -195,14 +195,25 @@ func guardDataDir(dataDir string, paths ...string) error {
 	if err != nil {
 		return err
 	}
-	absDataDir = filepath.Clean(absDataDir)
+	// Compare resolved paths. A lexical comparison was walked around by any
+	// symlink on the way in - a link to the directory, or an operation reaching
+	// it through a linked ancestor - and the guard is worth nothing if the one
+	// path spelling that matters can be spelled another way.
+	resolvedDataDir, err := executor.ResolveAllowMissing(absDataDir)
+	if err != nil {
+		return err
+	}
 
 	for _, path := range paths {
 		if path == "" {
 			continue
 		}
-		if pathsOverlap(filepath.Clean(path), absDataDir) {
-			return fmt.Errorf("refusing to queue an operation on the file-exploder data directory: %s", absDataDir)
+		resolved, err := executor.ResolveAllowMissing(path)
+		if err != nil {
+			return err
+		}
+		if pathsOverlap(resolved, resolvedDataDir) {
+			return fmt.Errorf("refusing to queue an operation on the file-exploder data directory: %s", resolvedDataDir)
 		}
 	}
 	return nil

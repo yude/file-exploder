@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/base64"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -70,5 +71,46 @@ func TestGuardDataDirRefusesOperationsOnTheQueuesOwnState(t *testing.T) {
 
 	if err := guardDataDir(dataDir, "", ""); err != nil {
 		t.Errorf("guardDataDir refused an empty operation: %v", err)
+	}
+}
+
+func TestGuardDataDirSeesThroughSymlinks(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "queue.db"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A link straight at the directory, and a link to its parent.
+	directAlias := filepath.Join(root, "alias")
+	if err := os.Symlink(dataDir, directAlias); err != nil {
+		t.Fatal(err)
+	}
+	parentAlias := filepath.Join(root, "rootalias")
+	if err := os.Symlink(root, parentAlias); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{
+		directAlias,
+		filepath.Join(directAlias, "queue.db"),
+		filepath.Join(parentAlias, "data"),
+		filepath.Join(parentAlias, "data", "queue.db"),
+		parentAlias, // an aliased ancestor takes the directory with it
+	} {
+		if err := guardDataDir(dataDir, path, ""); err == nil {
+			t.Errorf("guardDataDir allowed %q", path)
+		}
+	}
+
+	unrelated := filepath.Join(root, "elsewhere")
+	if err := os.MkdirAll(unrelated, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := guardDataDir(dataDir, unrelated, filepath.Join(unrelated, "new")); err != nil {
+		t.Errorf("guardDataDir refused an unrelated path: %v", err)
 	}
 }

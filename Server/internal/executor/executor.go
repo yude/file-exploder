@@ -438,7 +438,7 @@ func destinationInsideSource(src, dst string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	resolvedDst, err := resolveAllowMissing(filepath.Clean(dst))
+	resolvedDst, err := ResolveAllowMissing(filepath.Clean(dst))
 	if err != nil {
 		return false, err
 	}
@@ -644,7 +644,10 @@ func syncDir(path string) error {
 	return err
 }
 
-func resolveAllowMissing(path string) (string, error) {
+// ResolveAllowMissing resolves symlinks in path, tolerating components that do
+// not exist yet: the deepest existing ancestor is resolved and the missing tail
+// re-appended.
+func ResolveAllowMissing(path string) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
