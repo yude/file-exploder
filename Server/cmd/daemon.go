@@ -109,6 +109,7 @@ type rotatingLogWriter struct {
 	maxBytes int64
 	file     *os.File
 	size     int64
+	closed   bool
 }
 
 func newRotatingLogWriter(path string, maxBytes int64) (*rotatingLogWriter, error) {
@@ -148,8 +149,16 @@ func (w *rotatingLogWriter) open() error {
 func (w *rotatingLogWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.file == nil {
+	if w.closed {
 		return 0, os.ErrClosed
+	}
+	if w.file == nil {
+		// A rotation left us without a handle because the reopen failed. Try
+		// again rather than staying mute for the rest of the daemon's life:
+		// log.Logger discards write errors, so that silence reaches nobody.
+		if err := w.open(); err != nil {
+			return 0, err
+		}
 	}
 	if w.size > 0 && w.size+int64(len(p)) > w.maxBytes {
 		if err := w.rotate(); err != nil {
@@ -178,6 +187,7 @@ func (w *rotatingLogWriter) rotate() error {
 func (w *rotatingLogWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.closed = true
 	if w.file == nil {
 		return nil
 	}

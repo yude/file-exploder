@@ -96,3 +96,48 @@ func TestRotatingLogWriterKeepsWorkingAfterAFailedRotation(t *testing.T) {
 		t.Fatalf("log = %q, want it to contain third-line", current)
 	}
 }
+
+func TestRotatingLogWriterRecoversWhenAReopenFailed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "queue.log")
+	w, err := newRotatingLogWriter(path, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	if _, err := w.Write([]byte("first-line")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rotate with the whole directory unwritable: the rename fails and so does
+	// the reopen, which used to leave the writer without a handle for good.
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("second-line")); err == nil {
+		t.Fatal("expected the failed rotation to be reported")
+	}
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := w.Write([]byte("third-line")); err != nil {
+		t.Fatalf("writer stayed mute after the directory became writable again: %v", err)
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(current), "third-line") {
+		t.Fatalf("log = %q", current)
+	}
+
+	// A deliberate Close still means closed.
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("after-close")); err == nil {
+		t.Fatal("writing after Close unexpectedly succeeded")
+	}
+}
