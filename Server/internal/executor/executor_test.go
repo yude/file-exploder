@@ -230,3 +230,36 @@ func TestExecuteRenameOnSamePathIsANoOp(t *testing.T) {
 		t.Fatal("no-op rename of a missing source unexpectedly succeeded")
 	}
 }
+
+func TestExecuteMkdirRefusesAnExistingPath(t *testing.T) {
+	e := NewExecutor(nil)
+	tmpDir := t.TempDir()
+
+	existingDir := filepath.Join(tmpDir, "already-there")
+	if err := os.Mkdir(existingDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Execute(&queue.Job{Type: queue.JobMkdir, DstPath: existingDir}); err == nil {
+		t.Fatal("mkdir over an existing directory unexpectedly succeeded")
+	}
+
+	existingFile := filepath.Join(tmpDir, "file")
+	if err := os.WriteFile(existingFile, []byte("content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Execute(&queue.Job{Type: queue.JobMkdir, DstPath: existingFile}); err == nil {
+		t.Fatal("mkdir over an existing file unexpectedly succeeded")
+	}
+	if data, err := os.ReadFile(existingFile); err != nil || string(data) != "content" {
+		t.Fatalf("existing file disturbed: %q, %v", data, err)
+	}
+
+	// Missing parents are still created.
+	nested := filepath.Join(tmpDir, "a", "b", "c")
+	if err := e.Execute(&queue.Job{Type: queue.JobMkdir, DstPath: nested}); err != nil {
+		t.Fatalf("nested mkdir failed: %v", err)
+	}
+	if info, err := os.Stat(nested); err != nil || !info.IsDir() {
+		t.Fatalf("nested directory not created: %v", err)
+	}
+}

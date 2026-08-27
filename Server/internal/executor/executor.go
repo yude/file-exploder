@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -109,6 +110,15 @@ func (e *Executor) executeMkdir(job *queue.Job) error {
 		return fmt.Errorf("destination path is required for mkdir")
 	}
 	if err := validatePaths(job.DstPath); err != nil {
+		return err
+	}
+	// MkdirAll treats an existing directory as success, which would let "new
+	// folder" silently adopt whatever is already there. Every other operation
+	// refuses to touch an existing destination, so this one does too - while
+	// still creating missing parents.
+	if _, err := os.Lstat(job.DstPath); err == nil {
+		return fmt.Errorf("destination path already exists: %s", job.DstPath)
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return os.MkdirAll(job.DstPath, 0755)
