@@ -148,17 +148,17 @@ func (w *rotatingLogWriter) Write(p []byte) (int, error) {
 }
 
 func (w *rotatingLogWriter) rotate() error {
-	if err := w.file.Close(); err != nil {
-		return err
-	}
+	// Drop the handle whatever Close reports. Returning early on a Close error
+	// used to leave w.file non-nil and closed, so every later Write failed and
+	// retried the same rotation - the daemon stopped logging for good.
+	closeErr := w.file.Close()
 	w.file = nil
 	if err := os.Rename(w.path, w.path+".1"); err != nil {
 		// Reopen the active path so a transient rotation failure does not leave
 		// the daemon permanently unable to log subsequent work.
-		_ = w.open()
-		return err
+		return errors.Join(closeErr, err, w.open())
 	}
-	return w.open()
+	return errors.Join(closeErr, w.open())
 }
 
 func (w *rotatingLogWriter) Close() error {
