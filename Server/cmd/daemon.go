@@ -42,6 +42,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 	defer unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
 
+	rotateLogIfLarge(cfg.LogPath)
 	f, err := os.OpenFile(cfg.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
@@ -80,6 +81,22 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			processPendingJobs(ctx, q, exec, logger)
 		}
 	}
+}
+
+// maxLogBytes bounds queue.log. The daemon appends a few lines per job and
+// never truncates, so a long-lived install would otherwise grow one file
+// forever.
+const maxLogBytes = 8 << 20
+
+// rotateLogIfLarge moves an oversized log aside at startup, keeping one
+// previous generation. Failures are deliberately ignored: losing log history is
+// not a reason to refuse to start.
+func rotateLogIfLarge(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() < maxLogBytes {
+		return
+	}
+	_ = os.Rename(path, path+".1")
 }
 
 func processPendingJobs(ctx context.Context, q queue.Queue, exec *executor.Executor, logger *log.Logger) {
