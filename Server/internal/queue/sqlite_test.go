@@ -1,8 +1,10 @@
 package queue
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -180,6 +182,101 @@ func TestOpensDatabasesUnderAwkwardDirectoryNames(t *testing.T) {
 	}
 	if journalMode != "wal" {
 		t.Fatalf("journal_mode = %q, want wal", journalMode)
+	}
+}
+
+// storedTimestamps reads the raw text SQLite holds, bypassing the driver's
+// time.Time conversion, so the on-disk representation can be asserted directly.
+func storedTimestamps(t *testing.T, q *SQLiteQueue, id string) (string, string) {
+	t.Helper()
+	var createdAt string
+	var completedAt sql.NullString
+	if err := q.db.QueryRow(
+		`SELECT CAST(created_at AS TEXT), CAST(completed_at AS TEXT) FROM jobs WHERE id = ?`, id,
+	).Scan(&createdAt, &completedAt); err != nil {
+		t.Fatal(err)
+	}
+	return createdAt, completedAt.String
+}
+
+func TestTimestampsAreStoredInUTC(t *testing.T) {
+	q := newTestQueue(t)
+	tokyo := time.FixedZone("JST", 9*60*60)
+	created := time.Date(2026, 8, 27, 12, 51, 39, 606559075, tokyo)
+
+	if err := q.AddJob(&Job{ID: "job", Type: JobDelete, SrcPath: "/tmp/x", Status: StatusPending, CreatedAt: created}); err != nil {
+		t.Fatal(err)
+	}
+	if started, err := q.StartJob("job"); err != nil || !started {
+		t.Fatalf("StartJob() = %v, %v", started, err)
+	}
+	if err := q.UpdateStatus("job", StatusCompleted, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	createdAt, completedAt := storedTimestamps(t, q, "job")
+	for label, value := range map[string]string{"created_at": createdAt, "completed_at": completedAt} {
+		if !strings.HasSuffix(value, "+00:00") {
+			t.Errorf("%s stored as %q, want a UTC offset", label, value)
+		}
+	}
+
+	// The instant itself must survive the conversion.
+	job, err := q.GetJob("job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !job.CreatedAt.Equal(created) {
+		t.Errorf("CreatedAt = %v, want the same instant as %v", job.CreatedAt, created)
+	}
+}
+
+func TestMigrationRewritesLocalTimestampsAsUTC(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	q, err := NewSQLiteQueue(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rows exactly as a pre-upgrade daemon left them: local time plus offset.
+	// "later" is the more recent instant but sorts *earlier* as text, which is
+	// the misordering this migration exists to remove.
+	earlier := "2026-11-01 01:30:00.5+02:00" // 23:30 UTC on Oct 31
+	later := "2026-11-01 01:00:00.5+01:00"   // 00:00 UTC on Nov 1
+	for id, stamp := range map[string]string{"earlier": earlier, "later": later} {
+		if _, err := q.db.Exec(
+			`INSERT INTO jobs (id, type, src_path, status, created_at, started_at, completed_at)
+			 VALUES (?, 'delete', '/tmp/x', 'completed', ?, ?, ?)`, id, stamp, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := q.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopening runs the migration.
+	q, err = NewSQLiteQueue(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = q.Close() })
+
+	for _, id := range []string{"earlier", "later"} {
+		createdAt, completedAt := storedTimestamps(t, q, id)
+		if !strings.HasSuffix(createdAt, "+00:00") || !strings.HasSuffix(completedAt, "+00:00") {
+			t.Fatalf("%s still stored with a local offset: %q / %q", id, createdAt, completedAt)
+		}
+	}
+
+	logs, err := q.GetRecentLogs(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 2 {
+		t.Fatalf("GetRecentLogs returned %d jobs", len(logs))
+	}
+	if logs[0].ID != "later" {
+		t.Fatalf("most recent job = %q, want \"later\"", logs[0].ID)
 	}
 }
 

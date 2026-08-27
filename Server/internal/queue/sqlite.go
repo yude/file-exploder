@@ -65,15 +65,80 @@ func migrate(db *sql.DB) error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 	`
-	_, err := db.Exec(schema)
-	return err
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	return normalizeTimestamps(db)
+}
+
+// normalizeTimestamps rewrites timestamps that were stored with a local UTC
+// offset into UTC. The driver writes a time.Time using whatever offset it
+// carries, and the text comparison behind `ORDER BY completed_at` is only
+// chronological while every row shares one offset - so a DST transition, or an
+// administrator changing the server's timezone, would otherwise shuffle the job
+// history. Rows already in UTC are left alone, which makes this a no-op after
+// the first run.
+func normalizeTimestamps(db *sql.DB) error {
+	type record struct {
+		id          string
+		createdAt   time.Time
+		startedAt   sql.NullTime
+		completedAt sql.NullTime
+	}
+
+	rows, err := db.Query(`SELECT id, created_at, started_at, completed_at FROM jobs
+		WHERE created_at NOT LIKE '%+00:00'
+		   OR (started_at IS NOT NULL AND started_at NOT LIKE '%+00:00')
+		   OR (completed_at IS NOT NULL AND completed_at NOT LIKE '%+00:00')`)
+	if err != nil {
+		return err
+	}
+	var stale []record
+	for rows.Next() {
+		var r record
+		if err := rows.Scan(&r.id, &r.createdAt, &r.startedAt, &r.completedAt); err != nil {
+			rows.Close()
+			return err
+		}
+		stale = append(stale, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(stale) == 0 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, r := range stale {
+		if _, err := tx.Exec(`UPDATE jobs SET created_at=?, started_at=?, completed_at=? WHERE id=?`,
+			r.createdAt.UTC(), utcOrNull(r.startedAt), utcOrNull(r.completedAt), r.id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func utcOrNull(value sql.NullTime) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.Time.UTC()
 }
 
 func (q *SQLiteQueue) AddJob(job *Job) error {
 	_, err := q.db.Exec(
 		`INSERT INTO jobs (id, type, src_path, dst_path, mode, status, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		job.ID, job.Type, job.SrcPath, job.DstPath, job.Mode, job.Status, job.CreatedAt,
+		job.ID, job.Type, job.SrcPath, job.DstPath, job.Mode, job.Status, job.CreatedAt.UTC(),
 	)
 	return err
 }
@@ -114,7 +179,7 @@ func scanJob(row rowScanner) (*Job, error) {
 }
 
 func (q *SQLiteQueue) StartJob(id string) (bool, error) {
-	now := time.Now()
+	now := time.Now().UTC()
 	result, err := q.db.Exec(`UPDATE jobs SET status='running', started_at=?, error='' WHERE id=? AND status='pending'`, now, id)
 	if err != nil {
 		return false, err
@@ -127,7 +192,7 @@ func (q *SQLiteQueue) StartJob(id string) (bool, error) {
 }
 
 func (q *SQLiteQueue) UpdateStatus(id string, status JobStatus, errMsg string) error {
-	now := time.Now()
+	now := time.Now().UTC()
 	switch status {
 	case StatusRunning:
 		started, err := q.StartJob(id)
@@ -150,7 +215,7 @@ func (q *SQLiteQueue) UpdateStatus(id string, status JobStatus, errMsg string) e
 func (q *SQLiteQueue) finishRunningJob(id string, status JobStatus, errMsg string, completedAt time.Time) error {
 	result, err := q.db.Exec(
 		`UPDATE jobs SET status=?, completed_at=?, error=? WHERE id=? AND status='running'`,
-		status, completedAt, errMsg, id,
+		status, completedAt.UTC(), errMsg, id,
 	)
 	if err != nil {
 		return err
@@ -176,7 +241,7 @@ func (q *SQLiteQueue) GetActiveJobs() ([]*Job, error) {
 func (q *SQLiteQueue) ResetRunningJobs() error {
 	_, err := q.db.Exec(
 		`UPDATE jobs SET status='failed', error='daemon stopped before completion', completed_at=? WHERE status='running'`,
-		time.Now(),
+		time.Now().UTC(),
 	)
 	return err
 }
@@ -185,7 +250,7 @@ func (q *SQLiteQueue) CancelJob(id string) error {
 	// First update the status if pending
 	result, err := q.db.Exec(
 		`UPDATE jobs SET status='cancelled', completed_at=? WHERE id=? AND status='pending'`,
-		time.Now(), id,
+		time.Now().UTC(), id,
 	)
 	if err != nil {
 		return err
