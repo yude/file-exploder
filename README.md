@@ -145,7 +145,7 @@ file-exploder daemon
 1. Launch file-exploder
 2. Click "+" to add a server connection
 3. Enter server details (hostname, username, SSH key path)
-4. Double-click server to connect
+4. Click a server to connect
 5. Browse and manage files
 
 ## Development
