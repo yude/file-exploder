@@ -77,6 +77,10 @@ class SFTPService {
     /// as failed merely because they exceeded an arbitrary UI deadline.
     func waitForJob(id: String, timeout: TimeInterval? = nil) async throws {
         let start = Date()
+        // Every poll opens its own SSH connection, so start snappy for the
+        // common quick operation and back off for copies that run for minutes.
+        var pollInterval: UInt64 = 300_000_000
+        let maxPollInterval: UInt64 = 3_000_000_000
         while timeout == nil || Date().timeIntervalSince(start) < timeout! {
             try Task.checkCancellation()
             let job = try await getJobStatus(id: id)
@@ -90,7 +94,8 @@ class SFTPService {
             case .pending, .running:
                 break
             }
-            try await Task.sleep(nanoseconds: 500_000_000)
+            try await Task.sleep(nanoseconds: pollInterval)
+            pollInterval = min(pollInterval * 2, maxPollInterval)
         }
         throw QueueError.invalidResponse("処理がタイムアウトしました。ジョブ画面で状態を確認してください")
     }
