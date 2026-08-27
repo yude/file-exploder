@@ -216,3 +216,26 @@ final class ErrorLogSeparationTests: XCTestCase {
         XCTAssertEqual(log.listingError, "一覧が取得できません")
     }
 }
+
+final class RemotePathComponentTests: XCTestCase {
+    func testAcceptsOrdinaryNames() {
+        for name in ["file.txt", "フォルダ", "a b", "-dash", "..hidden", "a.b.c", "🙂"] {
+            XCTAssertTrue(RemotePath.isValidComponent(name), name)
+        }
+    }
+
+    func testRejectsAnythingThatIsNotOneComponent() {
+        for name in ["", ".", "..", "/", "a/b", "/leading", "trailing/", "nul\u{0000}"] {
+            XCTAssertFalse(RemotePath.isValidComponent(name), name)
+        }
+    }
+
+    /// Swift groups "/" plus a combining mark into a single Character that is
+    /// not "/", so a Character-level check let these through.
+    func testRejectsASeparatorHiddenBehindACombiningMark() {
+        XCTAssertFalse("/\u{0301}".contains("/"), "the premise: Character-level containment misses it")
+        XCTAssertFalse(RemotePath.isValidComponent("/\u{0301}"))
+        XCTAssertFalse(RemotePath.isValidComponent("a/\u{0301}b"))
+        XCTAssertFalse(RemotePath.isValidComponent("etc/\u{0301}passwd"))
+    }
+}

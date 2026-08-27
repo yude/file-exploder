@@ -42,6 +42,18 @@ enum RemotePath {
         return base == "/" ? "/" + name : base + "/" + name
     }
 
+    /// Whether `name` can stand as a single path component.
+    ///
+    /// The separator check runs over unicode scalars, not Characters: Swift
+    /// groups a separator followed by a combining mark into one Character that
+    /// does not compare equal to "/", so `name.contains("/")` waved through
+    /// names carrying an embedded separator and the caller went on to build a
+    /// path with more components than it meant to.
+    static func isValidComponent(_ name: String) -> Bool {
+        guard !name.isEmpty, name != ".", name != ".." else { return false }
+        return !name.unicodeScalars.contains { $0 == "/" || $0 == "\0" }
+    }
+
     /// Whether `path` is `root` or sits underneath it. Both sides are
     /// standardized first so `/srv/data/../data/x` is recognised as inside
     /// `/srv/data`.

@@ -386,7 +386,7 @@ class FileListViewModel: ObservableObject {
     }
 
     private func childPath(named name: String) -> String? {
-        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
+        guard RemotePath.isValidComponent(name) else {
             return nil
         }
         let path = RemotePath.appending(name, to: currentPath)
