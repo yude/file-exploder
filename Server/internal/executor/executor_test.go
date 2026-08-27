@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/yude/file-exploder/server/internal/queue"
 )
@@ -282,5 +283,40 @@ func TestExecuteMkdirAcceptsATrailingSeparator(t *testing.T) {
 	// Repeating it must still be refused.
 	if err := e.Execute(&queue.Job{Type: queue.JobMkdir, DstPath: target}); err == nil {
 		t.Fatal("second mkdir over the same directory unexpectedly succeeded")
+	}
+}
+
+func TestCopyToNamesNearTheFilesystemLimit(t *testing.T) {
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "source")
+	if err := os.WriteFile(src, []byte("content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	srcDir := filepath.Join(tmpDir, "sourcedir")
+	if err := os.Mkdir(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "inner"), []byte("content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 255 bytes is the usual NAME_MAX; the staging name used to add the whole
+	// destination name on top of it and blow past the limit.
+	longName := strings.Repeat("f", 255)
+	if err := copyPath(src, filepath.Join(tmpDir, longName)); err != nil {
+		t.Fatalf("copying a file to a 255-character name failed: %v", err)
+	}
+	if err := copyPath(srcDir, filepath.Join(tmpDir, strings.Repeat("d", 255))); err != nil {
+		t.Fatalf("copying a directory to a 255-character name failed: %v", err)
+	}
+}
+
+func TestStagingPatternStaysShortAndValid(t *testing.T) {
+	pattern := stagingPattern(strings.Repeat("あ", 200))
+	if len(pattern) > 96 {
+		t.Fatalf("pattern is %d bytes: %q", len(pattern), pattern)
+	}
+	if !utf8.ValidString(pattern) {
+		t.Fatalf("pattern truncated mid-rune: %q", pattern)
 	}
 }

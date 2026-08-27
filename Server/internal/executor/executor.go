@@ -256,7 +256,7 @@ func copyFile(src, dst string) error {
 	}
 
 	dstDir := filepath.Dir(dst)
-	dstFile, err := os.CreateTemp(dstDir, "."+filepath.Base(dst)+".*.tmp")
+	dstFile, err := os.CreateTemp(dstDir, stagingPattern(filepath.Base(dst)))
 	if err != nil {
 		return err
 	}
@@ -295,7 +295,7 @@ func copyDir(src, dst string) error {
 	if err := requireDirectory(dstParent); err != nil {
 		return err
 	}
-	staging, err := os.MkdirTemp(dstParent, "."+filepath.Base(dst)+".*.tmp")
+	staging, err := os.MkdirTemp(dstParent, stagingPattern(filepath.Base(dst)))
 	if err != nil {
 		return err
 	}
@@ -364,6 +364,21 @@ func destinationInsideSource(src, dst string) (bool, error) {
 		return false, err
 	}
 	return pathWithin(resolvedSrc, resolvedDst)
+}
+
+// stagingPattern builds the temp-name pattern a copy is assembled under.
+// os.CreateTemp and os.MkdirTemp append a random suffix to it, so embedding the
+// whole destination name overflowed NAME_MAX as soon as that name approached
+// the filesystem's 255-byte limit: copying to a long but perfectly legal name
+// failed with "file name too long" naming a temp path the user never chose.
+// Keep the recognisable part bounded and let the random suffix disambiguate.
+func stagingPattern(name string) string {
+	const maxNameHint = 64
+	hint := name
+	if len(hint) > maxNameHint {
+		hint = strings.ToValidUTF8(hint[:maxNameHint], "")
+	}
+	return "." + hint + ".*.tmp"
 }
 
 func requireDirectory(path string) error {
