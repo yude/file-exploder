@@ -288,7 +288,8 @@ struct FileListView: View {
             Menu("権限") {
                 ForEach(["755", "644", "777", "600"], id: \.self) { mode in
                     Button(mode) {
-                        Task { await viewModel.changePermissions(file, mode: mode) }
+                        let targets = actionFiles(selection: selection, fallback: file)
+                        Task { await viewModel.changePermissions(targets, mode: mode) }
                     }
                 }
             }

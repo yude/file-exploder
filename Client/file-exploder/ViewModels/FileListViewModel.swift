@@ -244,20 +244,30 @@ class FileListViewModel: ObservableObject {
         await refreshThenReport(finalErrors)
     }
 
-    func changePermissions(_ file: RemoteFile, mode: String) async {
+    func changePermissions(_ files: [RemoteFile], mode: String) async {
         guard let sftp else { return }
-        guard isPathAllowed(file.path) else {
-            errorMessage = "権限変更対象が許可範囲外です"
-            return
+        var queued: [QueuedOperation] = []
+        var finalErrors: [String] = []
+        for file in files {
+            guard isPathAllowed(file.path) else {
+                finalErrors.append("権限変更対象が許可範囲外です: \(file.path)")
+                continue
+            }
+            do {
+                let id = try await sftp.addToQueue(type: "chmod", src: nil, dst: file.path, mode: mode)
+                queued.append(QueuedOperation(id: id, name: file.name))
+            } catch {
+                finalErrors.append("権限変更登録エラー (\(file.name)): \(error.localizedDescription)")
+            }
         }
-        var finalError: String?
-        do {
-            let id = try await sftp.addToQueue(type: "chmod", src: nil, dst: file.path, mode: mode)
-            try await sftp.waitForJob(id: id)
-        } catch {
-            finalError = "権限変更エラー (\(file.name)): \(error.localizedDescription)"
+        for operation in queued {
+            do {
+                try await sftp.waitForJob(id: operation.id)
+            } catch {
+                finalErrors.append("権限変更エラー (\(operation.name)): \(error.localizedDescription)")
+            }
         }
-        await refreshThenReport(finalError.map { [$0] } ?? [])
+        await refreshThenReport(finalErrors)
     }
 
     @discardableResult
