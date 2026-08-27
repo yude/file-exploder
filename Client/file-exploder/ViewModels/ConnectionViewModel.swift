@@ -12,6 +12,8 @@ class ConnectionViewModel: ObservableObject {
     private var connectionGeneration = 0
     private var connectingServerID: UUID?
     private var defaultsObserver: NSObjectProtocol?
+    private weak var activeFileListVM: FileListViewModel?
+    private var activeServerSnapshot: Server?
 
     var activeServerID: UUID? {
         connectedServer?.id ?? connectingServerID
@@ -63,6 +65,14 @@ class ConnectionViewModel: ObservableObject {
     private func reloadIfChanged() {
         guard let stored = decodeStoredServers(), stored != servers else { return }
         servers = stored
+
+        // A different window may edit or delete the server this window is
+        // using. Keeping the old SSH session alive while showing the new saved
+        // details is misleading and can send operations to the wrong host.
+        if let active = activeServerSnapshot,
+           stored.first(where: { $0.id == active.id }) != active {
+            disconnectActiveSession()
+        }
     }
     
     func saveServers() {
@@ -101,10 +111,7 @@ class ConnectionViewModel: ObservableObject {
     func deleteServer(_ server: Server) {
         mutateServers { $0.removeAll { $0.id == server.id } }
         if connectedServer?.id == server.id || connectingServerID == server.id {
-            connectionGeneration += 1
-            connectingServerID = nil
-            isConnecting = false
-            connectedServer = nil
+            disconnectActiveSession()
         }
     }
     
@@ -115,6 +122,8 @@ class ConnectionViewModel: ObservableObject {
         isConnecting = true
         connectedServer = nil
         connectionError = nil
+        activeFileListVM = fileListVM
+        activeServerSnapshot = server
         
         await fileListVM.connect(server: server)
         guard generation == connectionGeneration else { return }
@@ -123,6 +132,8 @@ class ConnectionViewModel: ObservableObject {
             connectedServer = server
         } else {
             connectionError = fileListVM.errorMessage
+            activeFileListVM = nil
+            activeServerSnapshot = nil
         }
         
         connectingServerID = nil
@@ -134,5 +145,12 @@ class ConnectionViewModel: ObservableObject {
         connectingServerID = nil
         isConnecting = false
         connectedServer = nil
+        activeFileListVM = nil
+        activeServerSnapshot = nil
+    }
+
+    private func disconnectActiveSession() {
+        activeFileListVM?.disconnect()
+        disconnect()
     }
 }

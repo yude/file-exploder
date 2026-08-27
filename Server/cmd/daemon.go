@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 var daemonCmd = &cobra.Command{
 	Use:   "daemon",
 	Short: "Start the file-exploder daemon",
+	Args:  cobra.NoArgs,
 	RunE:  runDaemon,
 }
 
@@ -42,14 +45,13 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 	defer unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
 
-	rotateLogIfLarge(cfg.LogPath)
-	f, err := os.OpenFile(cfg.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	logWriter, err := newRotatingLogWriter(cfg.LogPath, maxLogBytes)
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
 	}
-	defer f.Close()
+	defer logWriter.Close()
 
-	logger := log.New(f, "[file-exploder] ", log.LstdFlags|log.Lshortfile)
+	logger := log.New(logWriter, "[file-exploder] ", log.LstdFlags|log.Lshortfile)
 	logger.Println("Daemon starting...")
 
 	q, err := queue.NewSQLiteQueue(cfg.DBPath)
@@ -83,20 +85,91 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 }
 
-// maxLogBytes bounds queue.log. The daemon appends a few lines per job and
-// never truncates, so a long-lived install would otherwise grow one file
-// forever.
+// maxLogBytes bounds each queue.log generation. One previous generation is
+// retained for diagnosis.
 const maxLogBytes = 8 << 20
 
-// rotateLogIfLarge moves an oversized log aside at startup, keeping one
-// previous generation. Failures are deliberately ignored: losing log history is
-// not a reason to refuse to start.
-func rotateLogIfLarge(path string) {
-	info, err := os.Stat(path)
-	if err != nil || info.Size() < maxLogBytes {
-		return
+type rotatingLogWriter struct {
+	mu       sync.Mutex
+	path     string
+	maxBytes int64
+	file     *os.File
+	size     int64
+}
+
+func newRotatingLogWriter(path string, maxBytes int64) (*rotatingLogWriter, error) {
+	w := &rotatingLogWriter{path: path, maxBytes: maxBytes}
+	if info, err := os.Stat(path); err == nil && info.Size() >= maxBytes {
+		if err := os.Rename(path, path+".1"); err != nil {
+			return nil, err
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
-	_ = os.Rename(path, path+".1")
+	if err := w.open(); err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
+func (w *rotatingLogWriter) open() error {
+	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(0600); err != nil {
+		_ = f.Close()
+		return err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	w.file = f
+	w.size = info.Size()
+	return nil
+}
+
+func (w *rotatingLogWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil {
+		return 0, os.ErrClosed
+	}
+	if w.size > 0 && w.size+int64(len(p)) > w.maxBytes {
+		if err := w.rotate(); err != nil {
+			return 0, err
+		}
+	}
+	n, err := w.file.Write(p)
+	w.size += int64(n)
+	return n, err
+}
+
+func (w *rotatingLogWriter) rotate() error {
+	if err := w.file.Close(); err != nil {
+		return err
+	}
+	w.file = nil
+	if err := os.Rename(w.path, w.path+".1"); err != nil {
+		// Reopen the active path so a transient rotation failure does not leave
+		// the daemon permanently unable to log subsequent work.
+		_ = w.open()
+		return err
+	}
+	return w.open()
+}
+
+func (w *rotatingLogWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil {
+		return nil
+	}
+	err := w.file.Close()
+	w.file = nil
+	return err
 }
 
 func processPendingJobs(ctx context.Context, q queue.Queue, exec *executor.Executor, logger *log.Logger) {

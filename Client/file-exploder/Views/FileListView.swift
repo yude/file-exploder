@@ -45,7 +45,18 @@ struct FileListView: View {
             Divider()
             
             // File table
-            if viewModel.isLoading {
+            if !viewModel.hasConnection {
+                Spacer()
+                VStack(spacing: 12) {
+                    Image(systemName: "network.slash")
+                        .font(.largeTitle)
+                        .foregroundColor(.secondary)
+                    Text("サーバーを選択して接続してください")
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Spacer()
+            } else if viewModel.isLoading {
                 Spacer()
                 ProgressView("読み込み中...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -224,12 +235,14 @@ struct FileListView: View {
             }
             .buttonStyle(.borderless)
             .help("新規フォルダ")
+            .disabled(!viewModel.hasConnection)
             
             Button(action: { Task { await viewModel.refresh() } }) {
                 Image(systemName: "arrow.clockwise")
             }
             .buttonStyle(.borderless)
             .help("更新")
+            .disabled(!viewModel.hasConnection)
             
             Spacer()
             

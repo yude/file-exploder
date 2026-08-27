@@ -71,6 +71,10 @@ func (e *Executor) executeRename(job *queue.Job) error {
 			if copyErr := copyPath(job.SrcPath, job.DstPath); copyErr != nil {
 				return fmt.Errorf("cross-device rename failed during copy: %w", copyErr)
 			}
+			currentInfo, statErr := os.Lstat(job.SrcPath)
+			if statErr != nil || !os.SameFile(srcInfo, currentInfo) {
+				return fmt.Errorf("cross-device rename copied the destination but the source changed before deletion")
+			}
 			if delErr := os.RemoveAll(job.SrcPath); delErr != nil {
 				return fmt.Errorf("cross-device rename copied the destination but failed to delete the source: %w", delErr)
 			}
@@ -112,16 +116,20 @@ func (e *Executor) executeMkdir(job *queue.Job) error {
 	if err := validatePaths(job.DstPath); err != nil {
 		return err
 	}
-	// MkdirAll treats an existing directory as success, which would let "new
-	// folder" silently adopt whatever is already there. Every other operation
-	// refuses to touch an existing destination, so this one does too - while
-	// still creating missing parents.
-	if _, err := os.Lstat(job.DstPath); err == nil {
-		return fmt.Errorf("destination path already exists: %s", job.DstPath)
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	// Create parents separately and use Mkdir for the leaf. A preflight Lstat
+	// followed by MkdirAll has a race: another process can create the leaf in
+	// between, after which MkdirAll reports success and this job incorrectly
+	// claims it created the directory.
+	if err := os.MkdirAll(filepath.Dir(job.DstPath), 0755); err != nil {
 		return err
 	}
-	return os.MkdirAll(job.DstPath, 0755)
+	if err := os.Mkdir(job.DstPath, 0755); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("destination path already exists: %s", job.DstPath)
+		}
+		return err
+	}
+	return nil
 }
 
 func (e *Executor) executeChmod(job *queue.Job) error {
@@ -201,6 +209,10 @@ func copyFile(src, dst string) error {
 		if err != nil {
 			return err
 		}
+		currentInfo, err := os.Lstat(src)
+		if err != nil || !os.SameFile(srcInfo, currentInfo) {
+			return fmt.Errorf("source changed while preparing to copy: %s", src)
+		}
 		dstDir := filepath.Dir(dst)
 		if err := requireDirectory(dstDir); err != nil {
 			return err
@@ -217,11 +229,21 @@ func copyFile(src, dst string) error {
 		return fmt.Errorf("unsupported source file type: %s", src)
 	}
 
+	// #nosec G304 -- opening user-selected paths is the server's core purpose;
+	// validation above rejects relative paths and the filesystem root.
 	srcFile, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer srcFile.Close()
+	openedInfo, err := srcFile.Stat()
+	if err != nil {
+		return err
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(srcInfo, openedInfo) {
+		return fmt.Errorf("source changed while preparing to copy: %s", src)
+	}
+	srcInfo = openedInfo
 
 	if err := requireDirectory(filepath.Dir(dst)); err != nil {
 		return err
@@ -234,7 +256,7 @@ func copyFile(src, dst string) error {
 	}
 	dstTmp := dstFile.Name()
 	defer func() {
-		dstFile.Close()
+		_ = dstFile.Close()
 		_ = os.Remove(dstTmp)
 	}()
 	if err := dstFile.Chmod(srcInfo.Mode().Perm()); err != nil {
@@ -358,6 +380,7 @@ func renameNoReplace(src, dst string) error {
 }
 
 func syncDir(path string) error {
+	// #nosec G304 -- path is the parent of an already validated operation path.
 	dir, err := os.Open(path)
 	if err != nil {
 		return err

@@ -31,6 +31,7 @@ class FileListViewModel: ObservableObject {
 
     private(set) var sftp: SFTPService?
     private var ssh: SSHConnection?
+    var hasConnection: Bool { sftp != nil }
 
     var canGoBack: Bool { pathHistoryIndex > 0 }
     var canGoForward: Bool { pathHistoryIndex < pathHistory.count - 1 }
@@ -159,7 +160,11 @@ class FileListViewModel: ObservableObject {
     }
 
     func createFolder(name: String) async {
-        guard let sftp, let newPath = childPath(named: name) else {
+        guard let sftp else {
+            errorMessage = "サーバーに接続されていません"
+            return
+        }
+        guard let newPath = childPath(named: name) else {
             errorMessage = "フォルダ名に /、.、.. は使用できません"
             return
         }

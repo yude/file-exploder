@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 )
@@ -23,6 +25,9 @@ func runStat(cmd *cobra.Command, args []string) error {
 	info, err := os.Lstat(target)
 	if err != nil {
 		return err
+	}
+	if !utf8.ValidString(target) || !utf8.ValidString(info.Name()) {
+		return fmt.Errorf("path cannot be represented safely as UTF-8")
 	}
 
 	enc := json.NewEncoder(os.Stdout)

@@ -27,7 +27,15 @@ struct ConnectionSheet: View {
     }
     var keyPathIsValid: Bool {
         let trimmed = keyPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty || trimmed.hasPrefix("/")
+        return !trimmed.contains("\0") && (trimmed.isEmpty || trimmed.hasPrefix("/"))
+    }
+    var connectionFieldsAreValid: Bool {
+        let trimmedHost = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedUser = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmedHost.isEmpty &&
+            !trimmedHost.contains(where: { $0.isWhitespace || $0.isNewline || $0 == "\0" }) &&
+            !trimmedUser.isEmpty &&
+            !trimmedUser.contains(where: { $0.isWhitespace || $0.isNewline || $0 == "\0" || $0 == "@" })
     }
     
     var body: some View {
@@ -96,10 +104,9 @@ struct ConnectionSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(
                     name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                    hostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                    username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    !connectionFieldsAreValid ||
                     validPort == nil ||
-                    !trimmedRoot.hasPrefix("/") ||
+                    !trimmedRoot.hasPrefix("/") || trimmedRoot.contains("\0") ||
                     !keyPathIsValid
                 )
             }

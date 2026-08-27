@@ -2,6 +2,7 @@ package queue
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"time"
@@ -37,13 +38,11 @@ func NewSQLiteQueue(dbPath string) (*SQLiteQueue, error) {
 	}
 
 	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+		return nil, fmt.Errorf("failed to ping database: %w", errors.Join(err, db.Close()))
 	}
 
 	if err := migrate(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to migrate database: %w", err)
+		return nil, fmt.Errorf("failed to migrate database: %w", errors.Join(err, db.Close()))
 	}
 
 	return &SQLiteQueue{db: db}, nil
@@ -97,14 +96,12 @@ func normalizeTimestamps(db *sql.DB) error {
 	for rows.Next() {
 		var r record
 		if err := rows.Scan(&r.id, &r.createdAt, &r.startedAt, &r.completedAt); err != nil {
-			rows.Close()
-			return err
+			return errors.Join(err, rows.Close())
 		}
 		stale = append(stale, r)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
+		return errors.Join(err, rows.Close())
 	}
 	if err := rows.Close(); err != nil {
 		return err

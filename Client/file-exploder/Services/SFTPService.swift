@@ -39,7 +39,7 @@ class SFTPService {
         guard let data = output.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let id = json["id"] as? String else {
-            throw QueueError.invalidResponse("不正なジョブ登録レスポンス: \(output)")
+            throw QueueError.invalidResponse("不正なジョブ登録レスポンス: \(output.truncatedForDisplay)")
         }
         return id
     }
@@ -159,10 +159,18 @@ class SFTPService {
             return try decoder.decode(T.self, from: data)
         } catch {
             if let rawString = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !rawString.isEmpty {
-                throw QueueError.invalidResponse("レスポンスの解析に失敗しました: \(error.localizedDescription)\nサーバー応答: \(rawString)")
+                throw QueueError.invalidResponse("レスポンスの解析に失敗しました: \(error.localizedDescription)\nサーバー応答: \(rawString.truncatedForDisplay)")
             }
             throw QueueError.invalidResponse("レスポンスの解析に失敗しました: \(error.localizedDescription)")
         }
+    }
+}
+
+private extension String {
+    var truncatedForDisplay: String {
+        let limit = 4_096
+        guard count > limit else { return self }
+        return String(prefix(limit)) + "\n…(truncated)"
     }
 }
 

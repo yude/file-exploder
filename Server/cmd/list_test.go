@@ -42,13 +42,32 @@ func TestNewFileInfoDescribesSymlinks(t *testing.T) {
 	}
 }
 
-func TestRunListSkipsEntriesThatDisappear(t *testing.T) {
+func TestListDirectoryIncludesBrokenSymlinks(t *testing.T) {
 	tmpDir := t.TempDir()
 	dangling := filepath.Join(tmpDir, "dangling")
 	if err := os.Symlink(filepath.Join(tmpDir, "missing"), dangling); err != nil {
 		t.Fatal(err)
 	}
-	if err := runList(nil, []string{tmpDir}); err != nil {
+	entries, err := listDirectory(tmpDir)
+	if err != nil {
 		t.Fatalf("listing a directory with a dangling symlink failed: %v", err)
+	}
+	if len(entries) != 1 || !entries[0].IsSymlink {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
+
+func TestListDirectorySkipsNamesThatAreNotUTF8(t *testing.T) {
+	tmpDir := t.TempDir()
+	invalidName := string([]byte{0xff, 0xfe})
+	if err := os.WriteFile(filepath.Join(tmpDir, invalidName), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := listDirectory(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("invalid UTF-8 entry was exposed as %#v", entries)
 	}
 }

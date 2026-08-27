@@ -17,6 +17,7 @@ var (
 var logCmd = &cobra.Command{
 	Use:   "log",
 	Short: "Show recent job logs",
+	Args:  cobra.NoArgs,
 	RunE:  runLog,
 }
 

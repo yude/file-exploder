@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 )
@@ -55,14 +56,30 @@ func init() {
 }
 
 func runList(cmd *cobra.Command, args []string) error {
-	target := args[0]
-	entries, err := os.ReadDir(target)
+	results, err := listDirectory(args[0])
 	if err != nil {
 		return err
 	}
 
+	enc := json.NewEncoder(os.Stdout)
+	return enc.Encode(results)
+}
+
+func listDirectory(target string) ([]FileInfo, error) {
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		return nil, err
+	}
+
 	results := make([]FileInfo, 0, len(entries))
 	for _, entry := range entries {
+		// JSON strings must be valid UTF-8. encoding/json replaces invalid bytes
+		// with U+FFFD, which would make the client send later operations to a
+		// different pathname. Such entries cannot be represented safely by the
+		// Swift client, so leave them out rather than expose a destructive alias.
+		if !utf8.ValidString(entry.Name()) {
+			continue
+		}
 		info, err := entry.Info()
 		if err != nil {
 			// The entry was removed between ReadDir and Info; skip it rather
@@ -70,12 +87,11 @@ func runList(cmd *cobra.Command, args []string) error {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
-			return err
+			return nil, err
 		}
 
 		results = append(results, newFileInfo(filepath.Join(target, entry.Name()), entry.Name(), info))
 	}
 
-	enc := json.NewEncoder(os.Stdout)
-	return enc.Encode(results)
+	return results, nil
 }

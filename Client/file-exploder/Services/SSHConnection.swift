@@ -122,6 +122,9 @@ class SSHConnection: ObservableObject, @unchecked Sendable {
                         continuation.resume(throwing: SSHError.connectionFailed(error.localizedDescription))
                         return
                     }
+                    if (cancelled.isSet || isInvalidated()) && process.isRunning {
+                        process.terminate()
+                    }
 
                     let stderrDrained = DispatchSemaphore(value: 0)
                     DispatchQueue.global(qos: .userInitiated).async { [self] in
@@ -131,6 +134,10 @@ class SSHConnection: ObservableObject, @unchecked Sendable {
                     drain(pipe.fileHandleForReading, into: outputData)
                     stderrDrained.wait()
                     process.waitUntilExit()
+                    if cancelled.isSet || isInvalidated() {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
 
                     let (data, outputExceeded) = outputData.get()
                     let (errorBytes, errorExceeded) = errorData.get()

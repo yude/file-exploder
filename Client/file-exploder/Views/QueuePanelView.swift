@@ -65,6 +65,8 @@ struct QueuePanelView: View {
                 List(displayJobs) { job in
                     QueueJobRow(job: job, sftp: sftp, onRefresh: {
                         Task { await refresh() }
+                    }, onError: { message in
+                        errorMessage = message
                     })
                 }
                 .listStyle(.plain)
@@ -129,6 +131,7 @@ struct QueueJobRow: View {
     let job: QueueJob
     let sftp: SFTPService?
     let onRefresh: () -> Void
+    let onError: (String) -> Void
     
     var statusColor: Color {
         switch job.status {
@@ -186,7 +189,8 @@ struct QueueJobRow: View {
                             do {
                                 try await sftp.cancelJob(id: job.id)
                             } catch {
-                                // Ignore error if it fails (might have just started running)
+                                onError("キャンセルに失敗しました: \(error.localizedDescription)")
+                                return
                             }
                             onRefresh()
                         }

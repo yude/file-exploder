@@ -18,6 +18,7 @@ import (
 var addCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Add a file operation to the queue",
+	Args:  cobra.NoArgs,
 	RunE:  runAdd,
 }
 
@@ -33,7 +34,9 @@ func init() {
 	addCmd.Flags().StringVar(&addSrc, "src", "", "Source path")
 	addCmd.Flags().StringVar(&addDst, "dst", "", "Destination path")
 	addCmd.Flags().StringVar(&addMode, "mode", "", "File mode (for chmod)")
-	addCmd.MarkFlagRequired("type")
+	if err := addCmd.MarkFlagRequired("type"); err != nil {
+		panic(err)
+	}
 	rootCmd.AddCommand(addCmd)
 }
 
@@ -65,6 +68,24 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		// parser the executor will apply.
 		if _, err := executor.ParseFileMode(addMode); err != nil {
 			return err
+		}
+	}
+	switch addType {
+	case "rename", "move", "copy":
+		if addMode != "" {
+			return fmt.Errorf("--mode is not valid for %s", addType)
+		}
+	case "delete":
+		if addDst != "" || addMode != "" {
+			return fmt.Errorf("--dst and --mode are not valid for delete")
+		}
+	case "mkdir":
+		if addSrc != "" || addMode != "" {
+			return fmt.Errorf("--src and --mode are not valid for mkdir")
+		}
+	case "chmod":
+		if addSrc != "" {
+			return fmt.Errorf("--src is not valid for chmod")
 		}
 	}
 	for _, path := range []string{addSrc, addDst} {
