@@ -662,3 +662,63 @@ func TestPlaceholderRenameKeepsModeAndRefusesAnOccupiedDestination(t *testing.T)
 		t.Fatalf("destination changed: %q, %v", data, err)
 	}
 }
+
+// The startup sweep has to recognise the names the copy path generates. They
+// are produced and matched by two separate functions, so a change to either
+// alone would stop orphaned staging being reclaimed - silently, since nothing
+// else looks at those names.
+func TestStagingNamesRoundTripThroughTheSweep(t *testing.T) {
+	scratch := t.TempDir()
+	for _, name := range []string{
+		"a",
+		"destination",
+		"name with spaces",
+		"日本語のなまえ",
+		".already-hidden",
+		"has.dots.everywhere",
+		strings.Repeat("f", 255),
+		string([]byte{0xff, 0xfe}), // the filesystem takes arbitrary bytes
+	} {
+		pattern := stagingPattern(name)
+		if !strings.HasPrefix(pattern, ".") || !strings.HasSuffix(pattern, ".*.tmp") {
+			t.Errorf("%q: pattern lost its shape: %q", name, pattern)
+			continue
+		}
+		// os.CreateTemp substitutes up to ten digits for the star; the result
+		// has to stay inside NAME_MAX or a legal destination cannot be copied to.
+		if len(pattern)+10 > 255 {
+			t.Errorf("%q: pattern is %d bytes, too long once the suffix is added", name, len(pattern))
+			continue
+		}
+		if utf8.ValidString(name) && !utf8.ValidString(pattern) {
+			t.Errorf("%q: truncation split a rune: %q", name, pattern)
+			continue
+		}
+
+		star := strings.LastIndex(pattern, "*")
+		prefix, suffix := pattern[:star], pattern[star+1:]
+
+		file, err := os.CreateTemp(scratch, pattern)
+		if err != nil {
+			t.Errorf("%q: CreateTemp rejected %q: %v", name, pattern, err)
+			continue
+		}
+		created := filepath.Base(file.Name())
+		file.Close()
+		os.Remove(file.Name())
+
+		if !isStagingName(created, prefix, suffix) {
+			t.Errorf("%q: sweep would not recognise its own staging name %q", name, created)
+		}
+
+		dir, err := os.MkdirTemp(scratch, pattern)
+		if err != nil {
+			t.Errorf("%q: MkdirTemp rejected %q: %v", name, pattern, err)
+			continue
+		}
+		if !isStagingName(filepath.Base(dir), prefix, suffix) {
+			t.Errorf("%q: sweep would not recognise its own staging directory %q", name, filepath.Base(dir))
+		}
+		os.RemoveAll(dir)
+	}
+}
