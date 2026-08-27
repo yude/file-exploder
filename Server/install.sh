@@ -33,6 +33,10 @@ if [ "$EUID" -eq 0 ]; then
     INSTALL_DIR="/usr/local/bin"
     SERVICE_DIR="/etc/systemd/system"
     SERVICE_SOURCE="file-exploder-system.service"
+    # Expanded below as ${SYSTEMCTL_ARGS[@]+...}: before bash 4.4, expanding an
+    # empty array under `set -u` is an unbound-variable error, which would abort
+    # this script on the root path alone - and on exactly the older distributions
+    # a root install is most likely to be used on.
     SYSTEMCTL_ARGS=()
 
     echo "WARNING: installing a root daemon with unrestricted filesystem access." >&2
@@ -67,15 +71,15 @@ trap 'rm -f "$BUILD_OUTPUT"' EXIT
 go build -buildvcs=false -o "$BUILD_OUTPUT" .
 
 echo "Installing to $INSTALL_DIR/file-exploder"
-systemctl "${SYSTEMCTL_ARGS[@]}" stop file-exploder 2>/dev/null || true
+systemctl ${SYSTEMCTL_ARGS[@]+"${SYSTEMCTL_ARGS[@]}"} stop file-exploder 2>/dev/null || true
 install -m 0755 "$BUILD_OUTPUT" "$INSTALL_DIR/file-exploder"
 
 echo "Installing systemd service..."
 install -m 0644 "$SERVICE_SOURCE" "$SERVICE_DIR/file-exploder.service"
 
-systemctl "${SYSTEMCTL_ARGS[@]}" daemon-reload
-systemctl "${SYSTEMCTL_ARGS[@]}" enable file-exploder
-systemctl "${SYSTEMCTL_ARGS[@]}" start file-exploder
+systemctl ${SYSTEMCTL_ARGS[@]+"${SYSTEMCTL_ARGS[@]}"} daemon-reload
+systemctl ${SYSTEMCTL_ARGS[@]+"${SYSTEMCTL_ARGS[@]}"} enable file-exploder
+systemctl ${SYSTEMCTL_ARGS[@]+"${SYSTEMCTL_ARGS[@]}"} start file-exploder
 if [ "$EUID" -eq 0 ]; then
     echo "Service started. Check status: systemctl status file-exploder"
 else
