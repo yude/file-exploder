@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -152,5 +153,32 @@ func TestRecentLogsHonoursLimit(t *testing.T) {
 	}
 	if len(logs) != 2 {
 		t.Fatalf("GetRecentLogs(2) returned %d jobs", len(logs))
+	}
+}
+
+func TestOpensDatabasesUnderAwkwardDirectoryNames(t *testing.T) {
+	// A '?' in the path used to end the filename as far as the driver was
+	// concerned, so the queue quietly lived somewhere else entirely.
+	dir := filepath.Join(t.TempDir(), "data?dir #1")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dir, "queue.db")
+
+	q, err := NewSQLiteQueue(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteQueue: %v", err)
+	}
+	t.Cleanup(func() { _ = q.Close() })
+
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("database was not created at the requested path: %v", err)
+	}
+	var journalMode string
+	if err := q.db.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		t.Fatal(err)
+	}
+	if journalMode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", journalMode)
 	}
 }

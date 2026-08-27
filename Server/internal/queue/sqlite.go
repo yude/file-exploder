@@ -3,6 +3,7 @@ package queue
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -16,8 +17,21 @@ type SQLiteQueue struct {
 	db *sql.DB
 }
 
+// sqliteDSN builds the connection string for dbPath. Appending the parameters
+// to a bare path is not safe: go-sqlite3 splits such a DSN at the first '?', so
+// a data directory containing one opens a different file entirely - silently,
+// with a fresh empty queue. The file: URI form percent-encodes the path.
+func sqliteDSN(dbPath string) string {
+	dsn := url.URL{
+		Scheme:   "file",
+		Path:     dbPath,
+		RawQuery: "_journal_mode=WAL&_busy_timeout=5000",
+	}
+	return dsn.String()
+}
+
 func NewSQLiteQueue(dbPath string) (*SQLiteQueue, error) {
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	db, err := sql.Open("sqlite3", sqliteDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
