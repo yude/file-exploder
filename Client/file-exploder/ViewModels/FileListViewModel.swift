@@ -345,9 +345,22 @@ class FileListViewModel: ObservableObject {
     /// reads has changed keeps unrelated writes from triggering an SSH round trip.
     private func applySettingsChangeIfNeeded() async {
         let settings = currentSettings
-        guard settings != lastAppliedSettings else { return }
+        guard let previous = lastAppliedSettings else {
+            lastAppliedSettings = settings
+            return
+        }
+        guard settings != previous else { return }
         lastAppliedSettings = settings
-        await refresh()
+
+        // Only the hidden-file setting changes which entries belong on screen,
+        // and only a fresh listing can supply the ones being revealed. The
+        // refresh interval just re-arms the timer - re-listing for it meant
+        // dragging the slider fired one SSH round trip per step of the drag.
+        if settings.showHiddenFiles != previous.showHiddenFiles {
+            await refresh()
+        } else {
+            startAutoRefresh()
+        }
     }
 
     private func startAutoRefresh() {
