@@ -21,21 +21,11 @@ struct FileExploderApp: App {
     #endif
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             MainView()
-                .onOpenURL { _ in
-                    // Handles opening a new window via the URL scheme
-                }
         }
         .commands {
-            CommandGroup(replacing: .newItem) {
-                Button("新しいウィンドウ") {
-                    if let url = URL(string: "file-exploder://new") {
-                        NSWorkspace.shared.open(url)
-                    }
-                }
-                .keyboardShortcut("n", modifiers: .command)
-            }
+            FileExploderWindowCommands()
         }
         
         #if os(macOS)
@@ -43,6 +33,19 @@ struct FileExploderApp: App {
             SettingsView()
         }
         #endif
+    }
+}
+
+struct FileExploderWindowCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("新しいウィンドウ") {
+                openWindow(id: "main")
+            }
+            .keyboardShortcut("n", modifiers: .command)
+        }
     }
 }
 

@@ -1,23 +1,18 @@
 package executor
 
 import (
-	"crypto/rand"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/yude/file-exploder/server/internal/queue"
+	"golang.org/x/sys/unix"
 )
-
-func randomTempFileName(prefix string) string {
-	b := make([]byte, 8)
-	rand.Read(b)
-	return prefix + "." + hex.EncodeToString(b) + ".tmp"
-}
 
 type Executor struct {
 	q queue.Queue
@@ -48,23 +43,22 @@ func (e *Executor) executeRename(job *queue.Job) error {
 	if err := validatePaths(job.SrcPath, job.DstPath); err != nil {
 		return err
 	}
-	// Same-path short-circuit
 	if filepath.Clean(job.SrcPath) == filepath.Clean(job.DstPath) {
-		return nil
+		_, err := os.Lstat(job.SrcPath)
+		return err
 	}
-	
-	if _, err := os.Lstat(job.DstPath); err == nil {
-		return fmt.Errorf("destination path already exists: %s", job.DstPath)
-	}
-	// For renaming across devices, fallback to copy+delete
-	err := os.Rename(job.SrcPath, job.DstPath)
+
+	err := renameNoReplace(job.SrcPath, job.DstPath)
 	if err != nil {
-		if strings.Contains(err.Error(), "cross-device link") || strings.Contains(err.Error(), "invalid cross-device link") {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("destination path already exists: %s", job.DstPath)
+		}
+		if errors.Is(err, syscall.EXDEV) {
 			if copyErr := copyPath(job.SrcPath, job.DstPath); copyErr != nil {
-				return fmt.Errorf("cross-device rename failed during copy: %v", copyErr)
+				return fmt.Errorf("cross-device rename failed during copy: %w", copyErr)
 			}
 			if delErr := os.RemoveAll(job.SrcPath); delErr != nil {
-				return fmt.Errorf("cross-device rename failed to delete source: %v", delErr)
+				return fmt.Errorf("cross-device rename copied the destination but failed to delete the source: %w", delErr)
 			}
 			return nil
 		}
@@ -104,9 +98,7 @@ func (e *Executor) executeMkdir(job *queue.Job) error {
 	if err := validatePaths(job.DstPath); err != nil {
 		return err
 	}
-	
-	// Create with restrictive permissions first
-	return os.MkdirAll(job.DstPath, 0700)
+	return os.MkdirAll(job.DstPath, 0755)
 }
 
 func (e *Executor) executeChmod(job *queue.Job) error {
@@ -123,9 +115,12 @@ func (e *Executor) executeChmod(job *queue.Job) error {
 	if err != nil {
 		return err
 	}
-	// Verify target exists
-	if _, err := os.Lstat(job.DstPath); err != nil {
+	info, err := os.Lstat(job.DstPath)
+	if err != nil {
 		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to chmod a symbolic link: %s", job.DstPath)
 	}
 	return os.Chmod(job.DstPath, mode)
 }
@@ -135,16 +130,15 @@ func validatePaths(paths ...string) error {
 		if p == "" {
 			return fmt.Errorf("path cannot be empty")
 		}
+		if !filepath.IsAbs(p) {
+			return fmt.Errorf("path must be absolute: %s", p)
+		}
 		cleaned := filepath.Clean(p)
 		if cleaned == "." || cleaned == "/" {
 			return fmt.Errorf("path cannot be root or current directory: %s", p)
 		}
 		if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 			return fmt.Errorf("path cannot contain relative parent references: %s", p)
-		}
-		// Also block absolute paths that resolve to system roots even if indirectly
-		if cleaned == "/bin" || cleaned == "/boot" || cleaned == "/dev" || cleaned == "/etc" || cleaned == "/lib" || cleaned == "/lib64" || cleaned == "/proc" || cleaned == "/root" || cleaned == "/run" || cleaned == "/sbin" || cleaned == "/sys" || cleaned == "/usr" || cleaned == "/var" {
-			return fmt.Errorf("path cannot be a system directory: %s", p)
 		}
 	}
 	return nil
@@ -156,15 +150,26 @@ func copyPath(src, dst string) error {
 	if cleanedSrc == cleanedDst {
 		return fmt.Errorf("source and destination are the same path")
 	}
-	if strings.HasPrefix(cleanedDst, cleanedSrc+string(filepath.Separator)) {
-		return fmt.Errorf("cannot copy a directory into itself")
-	}
-
 	info, err := os.Lstat(src)
 	if err != nil {
 		return err
 	}
 	if info.IsDir() {
+		resolvedSrc, err := filepath.EvalSymlinks(cleanedSrc)
+		if err != nil {
+			return err
+		}
+		resolvedDst, err := resolveAllowMissing(cleanedDst)
+		if err != nil {
+			return err
+		}
+		inside, err := pathWithin(resolvedSrc, resolvedDst)
+		if err != nil {
+			return err
+		}
+		if inside {
+			return fmt.Errorf("cannot copy a directory into itself")
+		}
 		return copyDir(src, dst)
 	}
 	return copyFile(src, dst)
@@ -181,10 +186,20 @@ func copyFile(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		if _, err := os.Lstat(dst); err == nil {
-			return fmt.Errorf("destination already exists: %s", dst)
+		dstDir := filepath.Dir(dst)
+		if err := requireDirectory(dstDir); err != nil {
+			return err
 		}
-		return os.Symlink(link, dst)
+		if err := os.Symlink(link, dst); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				return fmt.Errorf("destination already exists: %s", dst)
+			}
+			return err
+		}
+		return syncDir(dstDir)
+	}
+	if !srcInfo.Mode().IsRegular() {
+		return fmt.Errorf("unsupported source file type: %s", src)
 	}
 
 	srcFile, err := os.Open(src)
@@ -193,123 +208,178 @@ func copyFile(src, dst string) error {
 	}
 	defer srcFile.Close()
 
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+	if err := requireDirectory(filepath.Dir(dst)); err != nil {
 		return err
 	}
 
-	dstTmp := randomTempFileName(dst)
-	dstFile, err := os.OpenFile(dstTmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, srcInfo.Mode())
+	dstDir := filepath.Dir(dst)
+	dstFile, err := os.CreateTemp(dstDir, "."+filepath.Base(dst)+".*.tmp")
 	if err != nil {
 		return err
 	}
+	dstTmp := dstFile.Name()
 	defer func() {
 		dstFile.Close()
-		os.Remove(dstTmp) // Clean up temp file if rename fails or panic
+		_ = os.Remove(dstTmp)
 	}()
+	if err := dstFile.Chmod(srcInfo.Mode().Perm()); err != nil {
+		return err
+	}
 
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
 		return err
 	}
-
-	dstFile.Close() // Explicitly close before rename
-
-	if _, err := os.Lstat(dst); err == nil {
-		return fmt.Errorf("destination already exists: %s", dst)
+	if err := dstFile.Sync(); err != nil {
+		return err
 	}
-
-	return os.Rename(dstTmp, dst)
+	if err := dstFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Chtimes(dstTmp, srcInfo.ModTime(), srcInfo.ModTime()); err != nil {
+		return err
+	}
+	if err := renameNoReplace(dstTmp, dst); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("destination already exists: %s", dst)
+		}
+		return err
+	}
+	return syncDir(dstDir)
 }
 
 func copyDir(src, dst string) error {
-	// First gather everything to copy to verify it won't fail midway (as best we can)
-	// and to ensure we don't pick up files we create during the copy
-	var entries []struct {
-		relPath string
-		info    os.FileInfo
+	dstParent := filepath.Dir(dst)
+	if err := requireDirectory(dstParent); err != nil {
+		return err
 	}
-	
-	err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	staging, err := os.MkdirTemp(dstParent, "."+filepath.Base(dst)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(staging)
+
+	type directoryMetadata struct {
+		path string
+		info os.FileInfo
+	}
+	var directories []directoryMetadata
+	err = filepath.Walk(src, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
 		relPath, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
 		}
-		if relPath != "." { // skip the root dir itself
-			entries = append(entries, struct {
-				relPath string
-				info    os.FileInfo
-			}{relPath, info})
+		dstPath := staging
+		if relPath != "." {
+			dstPath = filepath.Join(staging, relPath)
 		}
-		return nil
+		if info.IsDir() {
+			if relPath != "." {
+				if err := os.Mkdir(dstPath, 0700); err != nil {
+					return err
+				}
+			}
+			directories = append(directories, directoryMetadata{path: dstPath, info: info})
+			return nil
+		}
+		return copyFile(path, dstPath)
 	})
 	if err != nil {
 		return err
 	}
+	for i := len(directories) - 1; i >= 0; i-- {
+		directory := directories[i]
+		if err := os.Chmod(directory.path, directory.info.Mode().Perm()); err != nil {
+			return err
+		}
+		if err := os.Chtimes(directory.path, directory.info.ModTime(), directory.info.ModTime()); err != nil {
+			return err
+		}
+	}
+	if err := renameNoReplace(staging, dst); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("destination already exists: %s", dst)
+		}
+		return err
+	}
+	return syncDir(dstParent)
+}
 
-	srcInfo, err := os.Lstat(src)
+func requireDirectory(path string) error {
+	info, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
-	
-	// Refuse to merge directories. If the destination already exists, fail.
-	if _, err := os.Lstat(dst); err == nil {
-		return fmt.Errorf("destination already exists: %s", dst)
+	if !info.IsDir() {
+		return fmt.Errorf("destination parent is not a directory: %s", path)
 	}
-
-	// Create root dst
-	if err := os.MkdirAll(dst, srcInfo.Mode()|0700); err != nil {
-		return err
-	}
-	
-	// Keep track of created dirs to revert on failure
-	var createdDirs []string
-	createdDirs = append(createdDirs, dst)
-	
-	defer func() {
-		if err != nil {
-			for i := len(createdDirs) - 1; i >= 0; i-- {
-				os.RemoveAll(createdDirs[i])
-			}
-		}
-	}()
-	
-	// Create all directories first
-	for _, entry := range entries {
-		if entry.info.IsDir() {
-			dstPath := filepath.Join(dst, entry.relPath)
-			if errMkdir := os.MkdirAll(dstPath, entry.info.Mode()|0700); errMkdir != nil {
-				err = errMkdir
-				return err
-			}
-			createdDirs = append(createdDirs, dstPath)
-		}
-	}
-
-	// Then copy files
-	for _, entry := range entries {
-		if !entry.info.IsDir() {
-			srcPath := filepath.Join(src, entry.relPath)
-			dstPath := filepath.Join(dst, entry.relPath)
-			if errCopy := copyFile(srcPath, dstPath); errCopy != nil {
-				err = errCopy
-				return err
-			}
-		}
-	}
-	
-	err = nil
 	return nil
 }
 
+func renameNoReplace(src, dst string) error {
+	err := unix.Renameat2(unix.AT_FDCWD, src, unix.AT_FDCWD, dst, unix.RENAME_NOREPLACE)
+	if errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EINVAL) {
+		return fmt.Errorf("filesystem does not support atomic no-replace rename: %w", err)
+	}
+	return err
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	err = dir.Sync()
+	if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+		return nil
+	}
+	return err
+}
+
+func resolveAllowMissing(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	current := absPath
+	var missing []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
+func pathWithin(parent, child string) (bool, error) {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false, err
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))), nil
+}
+
 func parseFileMode(s string) (os.FileMode, error) {
-	s = strings.TrimPrefix(s, "0")
 	if len(s) == 0 || len(s) > 4 {
 		return 0, fmt.Errorf("invalid file mode length: %s", s)
 	}
-	mode, err := strconv.ParseUint(s, 8, 32)
-	if err != nil {
+	mode, err := strconv.ParseUint(s, 8, 12)
+	if err != nil || mode > 0777 {
 		return 0, fmt.Errorf("invalid file mode: %s", s)
 	}
 	return os.FileMode(mode), nil

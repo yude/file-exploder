@@ -10,7 +10,7 @@ import (
 
 var cancelCmd = &cobra.Command{
 	Use:   "cancel [job-id]",
-	Short: "Cancel a pending or running job",
+	Short: "Cancel a pending job",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runCancel,
 }

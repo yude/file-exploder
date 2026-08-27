@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 echo "Building file-exploder for macOS..."
 swift build -c release
@@ -37,17 +37,6 @@ cat <<PLIST > "$CONTENTS_DIR/Info.plist"
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleURLName</key>
-            <string>com.yude.file-exploder</string>
-            <key>CFBundleURLSchemes</key>
-            <array>
-                <string>file-exploder</string>
-            </array>
-        </dict>
-    </array>
 </dict>
 </plist>
 PLIST

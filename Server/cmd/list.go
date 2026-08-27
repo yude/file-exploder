@@ -35,11 +35,11 @@ func runList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var results []FileInfo
+	results := make([]FileInfo, 0, len(entries))
 	for _, entry := range entries {
 		info, err := entry.Info()
 		if err != nil {
-			continue // Skip files we can't stat
+			return err
 		}
 
 		results = append(results, FileInfo{

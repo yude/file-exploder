@@ -9,6 +9,12 @@ class ConnectionViewModel: ObservableObject {
     @Published var connectionError: String?
     
     private let serversKey = "saved_servers"
+    private var connectionGeneration = 0
+    private var connectingServerID: UUID?
+
+    var activeServerID: UUID? {
+        connectedServer?.id ?? connectingServerID
+    }
     
     init() {
         loadServers()
@@ -51,16 +57,24 @@ class ConnectionViewModel: ObservableObject {
     func deleteServer(_ server: Server) {
         servers.removeAll { $0.id == server.id }
         saveServers()
-        if connectedServer?.id == server.id {
+        if connectedServer?.id == server.id || connectingServerID == server.id {
+            connectionGeneration += 1
+            connectingServerID = nil
+            isConnecting = false
             connectedServer = nil
         }
     }
     
     func connect(to server: Server, fileListVM: FileListViewModel) async {
+        connectionGeneration += 1
+        let generation = connectionGeneration
+        connectingServerID = server.id
         isConnecting = true
+        connectedServer = nil
         connectionError = nil
         
         await fileListVM.connect(server: server)
+        guard generation == connectionGeneration else { return }
         
         if fileListVM.errorMessage == nil {
             connectedServer = server
@@ -68,10 +82,14 @@ class ConnectionViewModel: ObservableObject {
             connectionError = fileListVM.errorMessage
         }
         
+        connectingServerID = nil
         isConnecting = false
     }
     
     func disconnect() {
+        connectionGeneration += 1
+        connectingServerID = nil
+        isConnecting = false
         connectedServer = nil
     }
 }

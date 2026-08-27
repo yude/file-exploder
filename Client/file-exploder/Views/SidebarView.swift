@@ -38,6 +38,9 @@ struct SidebarView: View {
                             editingServer = server
                         },
                         onDelete: {
+                            if connectionVM.activeServerID == server.id {
+                                fileListVM.disconnect()
+                            }
                             connectionVM.deleteServer(server)
                         }
                     )
@@ -68,10 +71,10 @@ struct SidebarView: View {
             }
         }
         .sheet(isPresented: $showAddServer) {
-            ConnectionSheet(connectionVM: connectionVM, server: nil)
+            ConnectionSheet(connectionVM: connectionVM, fileListVM: fileListVM, server: nil)
         }
         .sheet(item: $editingServer) { server in
-            ConnectionSheet(connectionVM: connectionVM, server: server)
+            ConnectionSheet(connectionVM: connectionVM, fileListVM: fileListVM, server: server)
         }
     }
 }

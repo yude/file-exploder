@@ -1,7 +1,9 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ConnectionSheet: View {
     @ObservedObject var connectionVM: ConnectionViewModel
+    @ObservedObject var fileListVM: FileListViewModel
     let server: Server?
     
     @State private var name = ""
@@ -16,6 +18,17 @@ struct ConnectionSheet: View {
     @Environment(\.dismiss) private var dismiss
     
     var isEditing: Bool { server != nil }
+    var validPort: UInt16? {
+        guard let value = UInt16(port), value > 0 else { return nil }
+        return value
+    }
+    var trimmedRoot: String {
+        remoteRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    var keyPathIsValid: Bool {
+        let trimmed = keyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed.hasPrefix("/")
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -81,7 +94,14 @@ struct ConnectionSheet: View {
                     save()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(name.isEmpty || hostname.isEmpty || username.isEmpty || UInt16(port) == nil)
+                .disabled(
+                    name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    hostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    validPort == nil ||
+                    !trimmedRoot.hasPrefix("/") ||
+                    !keyPathIsValid
+                )
             }
             .padding()
         }
@@ -106,7 +126,7 @@ struct ConnectionSheet: View {
         }
         .fileImporter(
             isPresented: $showKeyPicker,
-            allowedContentTypes: [],
+            allowedContentTypes: [.item],
             allowsMultipleSelection: false
         ) { result in
             if case .success(let urls) = result, let url = urls.first {
@@ -116,18 +136,25 @@ struct ConnectionSheet: View {
     }
     
     private func save() {
-        if let portInt = UInt16(port) {
+        if let portInt = validPort {
+            let normalizedRoot = (trimmedRoot as NSString).standardizingPath
+            let trimmedKeyPath = keyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedKeyPath = trimmedKeyPath.isEmpty ? nil : (trimmedKeyPath as NSString).standardizingPath
             let newServer = Server(
-                name: name,
-                hostname: hostname,
+                name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                hostname: hostname.trimmingCharacters(in: .whitespacesAndNewlines),
                 port: portInt,
-                username: username,
+                username: username.trimmingCharacters(in: .whitespacesAndNewlines),
                 authType: authType,
-                keyPath: authType == .sshKey ? keyPath : nil,
-                remoteRoot: remoteRoot
+                keyPath: authType == .sshKey ? normalizedKeyPath : nil,
+                remoteRoot: normalizedRoot
             )
             
             if let existing = server {
+                if connectionVM.activeServerID == existing.id {
+                    fileListVM.disconnect()
+                    connectionVM.disconnect()
+                }
                 var updated = newServer
                 updated.id = existing.id
                 connectionVM.updateServer(updated)
@@ -141,5 +168,9 @@ struct ConnectionSheet: View {
 }
 
 #Preview {
-    ConnectionSheet(connectionVM: ConnectionViewModel(), server: nil)
+    ConnectionSheet(
+        connectionVM: ConnectionViewModel(),
+        fileListVM: FileListViewModel(),
+        server: nil
+    )
 }

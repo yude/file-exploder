@@ -6,12 +6,8 @@ struct RemoteFile: Identifiable, Hashable {
     let path: String
     let size: Int64
     let modificationDate: Date
-    var isDirectory: Bool // Changed to var so permissions can mutate it
-    var permissions: FilePermissions {
-        didSet {
-            permissions.isDirectory = self.isDirectory
-        }
-    }
+    let isDirectory: Bool
+    let permissions: FilePermissions
     
     var displayName: String {
         name
@@ -30,6 +26,10 @@ struct RemoteFile: Identifiable, Hashable {
         formatter.timeStyle = .short
         return formatter.string(from: modificationDate)
     }
+
+    var symbolicPermissions: String {
+        permissions.symbolicString(isDirectory: isDirectory)
+    }
     
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
@@ -41,7 +41,6 @@ struct RemoteFile: Identifiable, Hashable {
 }
 
 struct FilePermissions: Hashable {
-    var isDirectory: Bool = false
     let ownerRead: Bool
     let ownerWrite: Bool
     let ownerExecute: Bool
@@ -59,7 +58,7 @@ struct FilePermissions: Hashable {
         return "\(owner)\(group)\(other)"
     }
     
-    var symbolicString: String {
+    func symbolicString(isDirectory: Bool) -> String {
         var str = isDirectory ? "d" : "-"
         
         str += ownerRead ? "r" : "-"

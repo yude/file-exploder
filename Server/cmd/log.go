@@ -29,6 +29,9 @@ func runLog(cmd *cobra.Command, args []string) error {
 	if logLimit <= 0 {
 		return fmt.Errorf("limit must be greater than 0")
 	}
+	if logLimit > 1000 {
+		return fmt.Errorf("limit must not exceed 1000")
+	}
 
 	cfg := config.DefaultConfig()
 	if err := cfg.EnsureDirs(); err != nil {

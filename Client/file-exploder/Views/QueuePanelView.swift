@@ -4,6 +4,7 @@ struct QueuePanelView: View {
     @State private var activeJobs: [QueueJob] = []
     @State private var logJobs: [QueueJob] = []
     @State private var isLoading = false
+    @State private var isRefreshing = false
     @State private var errorMessage: String?
     @State private var selectedTab = 0
     
@@ -31,9 +32,6 @@ struct QueuePanelView: View {
             .pickerStyle(.segmented)
             .padding(.horizontal)
             .padding(.bottom, 8)
-            .onChange(of: selectedTab) {
-                Task { await refresh() }
-            }
             
             Divider()
             
@@ -73,15 +71,35 @@ struct QueuePanelView: View {
             }
         }
         .frame(width: 250)
-        .task {
-            await refresh()
+        .task(id: refreshTaskID) {
+            isLoading = true
+            while !Task.isCancelled {
+                await refresh()
+                do {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                } catch {
+                    break
+                }
+            }
         }
+    }
+
+    private var refreshTaskID: RefreshTaskID {
+        RefreshTaskID(tab: selectedTab, service: sftp.map { ObjectIdentifier($0) })
     }
     
     func refresh() async {
-        guard let sftp = sftp else { return }
-        isLoading = true
+        guard let sftp = sftp else {
+            isLoading = false
+            return
+        }
+        guard !isRefreshing else { return }
+        isRefreshing = true
         errorMessage = nil
+        defer {
+            isRefreshing = false
+            isLoading = false
+        }
         
         do {
             if selectedTab == 0 {
@@ -90,11 +108,15 @@ struct QueuePanelView: View {
                 logJobs = try await sftp.getJobLogs(limit: 50)
             }
         } catch {
+            if error is CancellationError { return }
             errorMessage = error.localizedDescription
         }
-        
-        isLoading = false
     }
+}
+
+private struct RefreshTaskID: Hashable {
+    let tab: Int
+    let service: ObjectIdentifier?
 }
 
 struct QueueJobRow: View {

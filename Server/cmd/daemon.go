@@ -12,6 +12,7 @@ import (
 	"github.com/yude/file-exploder/server/internal/config"
 	"github.com/yude/file-exploder/server/internal/executor"
 	"github.com/yude/file-exploder/server/internal/queue"
+	"golang.org/x/sys/unix"
 )
 
 var daemonCmd = &cobra.Command{
@@ -30,7 +31,17 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	f, err := os.OpenFile(cfg.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	lockFile, err := os.OpenFile(cfg.LockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to open daemon lock: %w", err)
+	}
+	defer lockFile.Close()
+	if err := unix.Flock(int(lockFile.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		return fmt.Errorf("another file-exploder daemon is already running: %w", err)
+	}
+	defer unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
+
+	f, err := os.OpenFile(cfg.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
 	}

@@ -6,9 +6,10 @@ import (
 )
 
 type Config struct {
-	DBPath  string
-	LogPath string
-	DataDir string
+	DBPath   string
+	LogPath  string
+	LockPath string
+	DataDir  string
 }
 
 func DefaultConfig() *Config {
@@ -20,19 +21,31 @@ func DefaultConfig() *Config {
 	}
 
 	return &Config{
-		DBPath:  filepath.Join(dataDir, "queue.db"),
-		LogPath: filepath.Join(dataDir, "queue.log"),
-		DataDir: dataDir,
+		DBPath:   filepath.Join(dataDir, "queue.db"),
+		LogPath:  filepath.Join(dataDir, "queue.log"),
+		LockPath: filepath.Join(dataDir, "daemon.lock"),
+		DataDir:  dataDir,
 	}
 }
 
 func (c *Config) EnsureDirs() error {
+	if !filepath.IsAbs(c.DataDir) {
+		return &os.PathError{Op: "configure", Path: c.DataDir, Err: os.ErrInvalid}
+	}
 	info, err := os.Stat(c.DataDir)
 	if os.IsNotExist(err) {
 		return os.MkdirAll(c.DataDir, 0700)
 	}
-	if err == nil && (info.Mode()&0777) != 0700 {
-		os.Chmod(c.DataDir, 0700)
+	if err != nil {
+		return err
 	}
-	return err
+	if !info.IsDir() {
+		return &os.PathError{Op: "mkdir", Path: c.DataDir, Err: os.ErrExist}
+	}
+	if info.Mode().Perm() != 0700 {
+		if err := os.Chmod(c.DataDir, 0700); err != nil {
+			return err
+		}
+	}
+	return nil
 }

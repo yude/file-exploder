@@ -44,6 +44,7 @@ type Queue interface {
 	UpdateStatus(id string, status JobStatus, errMsg string) error
 	StartJob(id string) (bool, error)
 	GetPendingJobs() ([]*Job, error)
+	GetActiveJobs() ([]*Job, error)
 	ResetRunningJobs() error
 	GetAllJobs() ([]*Job, error)
 	CancelJob(id string) error

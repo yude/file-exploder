@@ -3,6 +3,7 @@ import Foundation
 /// SFTP service for directory listing and file operations
 class SFTPService {
     private let ssh: SSHConnection
+    private let commandPrefix = "PATH=\"$PATH:/usr/local/bin:$HOME/.local/bin\"; export PATH; file-exploder"
     
     init(ssh: SSHConnection) {
         self.ssh = ssh
@@ -11,49 +12,27 @@ class SFTPService {
     /// List directory contents
     func listDirectory(path: String) async throws -> [RemoteFile] {
         // Use the new go server list command
-        let command = "PATH=$PATH:/usr/local/bin:~/.local/bin file-exploder list \(path.shellEscaped)"
+        let command = "\(commandPrefix) list -- \(path.shellEscaped)"
         let output = try await ssh.executeCommand(command)
         guard let data = output.data(using: .utf8) else {
             throw QueueError.invalidResponse("Empty response")
         }
         let list = try parseJSON(data, type: [RemoteFileJSON].self)
         
-        return list.map { item in
-            let date = Date(timeIntervalSince1970: TimeInterval(item.modificationDate))
-            var perms = FilePermissions.from(octal: Int(item.permissions))
-            perms.isDirectory = item.isDirectory
-            return RemoteFile(
-                name: item.name,
-                path: item.path,
-                size: item.size,
-                modificationDate: date,
-                isDirectory: item.isDirectory,
-                permissions: perms
-            )
-        }
+        return list.map(makeRemoteFile)
     }
     
     /// Get file info
     func getFileInfo(path: String) async throws -> RemoteFile {
         // Use the new go server stat command
-        let command = "PATH=$PATH:/usr/local/bin:~/.local/bin file-exploder stat \(path.shellEscaped)"
+        let command = "\(commandPrefix) stat -- \(path.shellEscaped)"
         let output = try await ssh.executeCommand(command)
         guard let data = output.data(using: .utf8) else {
             throw QueueError.invalidResponse("Empty response")
         }
         let item = try parseJSON(data, type: RemoteFileJSON.self)
         
-        let date = Date(timeIntervalSince1970: TimeInterval(item.modificationDate))
-        var perms = FilePermissions.from(octal: Int(item.permissions))
-        perms.isDirectory = item.isDirectory
-        return RemoteFile(
-            name: item.name,
-            path: item.path,
-            size: item.size,
-            modificationDate: date,
-            isDirectory: item.isDirectory,
-            permissions: perms
-        )
+        return makeRemoteFile(item)
     }
     
     /// Create directory
@@ -83,7 +62,7 @@ class SFTPService {
     
     /// Add operation to server-side queue
     func addToQueue(type: String, src: String?, dst: String?, mode: String? = nil) async throws -> String {
-        var command = "PATH=$PATH:/usr/local/bin:~/.local/bin file-exploder add --type \(type)"
+        var command = "\(commandPrefix) add --type \(type)"
         if let src = src {
             command += " --src \(src.shellEscaped)"
         }
@@ -105,7 +84,7 @@ class SFTPService {
     
     /// Get queue status
     func getQueueStatus() async throws -> [QueueJob] {
-        let output = try await ssh.executeCommand("PATH=$PATH:/usr/local/bin:~/.local/bin file-exploder status")
+        let output = try await ssh.executeCommand("\(commandPrefix) status")
         guard let data = output.data(using: .utf8) else {
             throw QueueError.invalidResponse("Empty response")
         }
@@ -115,7 +94,7 @@ class SFTPService {
     
     /// Get recent job logs
     func getJobLogs(limit: Int = 50) async throws -> [QueueJob] {
-        let output = try await ssh.executeCommand("PATH=$PATH:/usr/local/bin:~/.local/bin file-exploder log --limit \(limit)")
+        let output = try await ssh.executeCommand("\(commandPrefix) log --limit \(limit)")
         guard let data = output.data(using: .utf8) else {
             throw QueueError.invalidResponse("Empty response")
         }
@@ -124,43 +103,56 @@ class SFTPService {
     
     /// Get specific job status
     func getJobStatus(id: String) async throws -> QueueJob {
-        let output = try await ssh.executeCommand("PATH=$PATH:/usr/local/bin:~/.local/bin file-exploder status \(id.shellEscaped)")
+        let output = try await ssh.executeCommand("\(commandPrefix) status -- \(id.shellEscaped)")
         guard let data = output.data(using: .utf8) else {
             throw QueueError.invalidResponse("Empty response")
         }
         return try parseJSON(data, type: QueueJob.self)
     }
     
-    /// Wait for job to complete
-    func waitForJob(id: String, timeout: TimeInterval = 60.0) async throws {
+    /// Wait for a queued operation. With no timeout, polling ends on completion,
+    /// an SSH failure, or task cancellation; long-running copies are not reported
+    /// as failed merely because they exceeded an arbitrary UI deadline.
+    func waitForJob(id: String, timeout: TimeInterval? = nil) async throws {
         let start = Date()
-        while Date().timeIntervalSince(start) < timeout {
+        while timeout == nil || Date().timeIntervalSince(start) < timeout! {
+            try Task.checkCancellation()
             let job = try await getJobStatus(id: id)
-            if job.status == .completed {
+            switch job.status {
+            case .completed:
                 return
-            } else if job.status == .failed {
+            case .failed:
                 throw QueueError.invalidResponse(job.error ?? "Unknown error")
-            } else if job.status == .cancelled {
+            case .cancelled:
                 throw QueueError.invalidResponse("ジョブがキャンセルされました")
+            case .pending, .running:
+                break
             }
-            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
-            if Task.isCancelled {
-                throw QueueError.invalidResponse("処理が中断されました")
-            }
+            try await Task.sleep(nanoseconds: 500_000_000)
         }
-        throw QueueError.invalidResponse("処理がタイムアウトしました")
+        throw QueueError.invalidResponse("処理がタイムアウトしました。ジョブ画面で状態を確認してください")
     }
     
     /// Cancel a queue job
     func cancelJob(id: String) async throws {
-        _ = try await ssh.executeCommand("PATH=$PATH:/usr/local/bin:~/.local/bin file-exploder cancel \(id.shellEscaped)")
+        _ = try await ssh.executeCommand("\(commandPrefix) cancel -- \(id.shellEscaped)")
     }
     
     // MARK: - Private helpers
+
+    private func makeRemoteFile(_ item: RemoteFileJSON) -> RemoteFile {
+        RemoteFile(
+            name: item.name,
+            path: item.path,
+            size: item.size,
+            modificationDate: Date(timeIntervalSince1970: TimeInterval(item.modificationDate)),
+            isDirectory: item.isDirectory,
+            permissions: FilePermissions.from(octal: Int(item.permissions))
+        )
+    }
     
     private func parseJSON<T: Decodable>(_ data: Data, type: T.Type) throws -> T {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = JSONDecoder.fileExploderDecoder()
         do {
             return try decoder.decode(T.self, from: data)
         } catch {

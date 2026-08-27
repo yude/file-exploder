@@ -42,7 +42,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return enc.Encode(job)
 	}
 
-	jobs, err := q.GetPendingJobs()
+	jobs, err := q.GetActiveJobs()
 	if err != nil {
 		return err
 	}

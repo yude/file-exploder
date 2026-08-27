@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,7 +40,7 @@ func init() {
 func runAdd(cmd *cobra.Command, args []string) error {
 	// Validate job type
 	validTypes := map[string]bool{
-		"rename": true, "move": true, "delete": true, 
+		"rename": true, "move": true, "delete": true,
 		"copy": true, "mkdir": true, "chmod": true,
 	}
 	if !validTypes[addType] {
@@ -59,10 +61,23 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		if addDst == "" || addMode == "" {
 			return fmt.Errorf("both --dst and --mode are required for chmod")
 		}
-		// Validate mode format (octal string 1-4 chars)
-		cleanedMode := strings.TrimPrefix(addMode, "0")
-		if len(cleanedMode) == 0 || len(cleanedMode) > 4 {
+		mode, err := strconv.ParseUint(addMode, 8, 12)
+		if err != nil || len(addMode) == 0 || len(addMode) > 4 || mode > 0777 {
 			return fmt.Errorf("invalid mode format: %s", addMode)
+		}
+	}
+	for _, path := range []string{addSrc, addDst} {
+		if path == "" {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("paths must be absolute: %s", path)
+		}
+		if strings.ContainsRune(path, '\x00') {
+			return fmt.Errorf("paths cannot contain NUL bytes")
+		}
+		if filepath.Clean(path) == "/" {
+			return fmt.Errorf("refusing to queue an operation on the filesystem root")
 		}
 	}
 
@@ -70,7 +85,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	if err := cfg.EnsureDirs(); err != nil {
 		return err
 	}
-	
+
 	q, err := queue.NewSQLiteQueue(cfg.DBPath)
 	if err != nil {
 		return err

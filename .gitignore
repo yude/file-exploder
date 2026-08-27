@@ -25,6 +25,7 @@ DerivedData/
 .DS_Store
 .AppleDouble
 .LSOverride
+/Client/file-exploder.app/
 
 # IDE
 .idea/

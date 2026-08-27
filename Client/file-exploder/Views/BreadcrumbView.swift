@@ -2,15 +2,26 @@ import SwiftUI
 
 struct BreadcrumbView: View {
     let path: String
+    let rootPath: String
     let onNavigate: (String) -> Void
     
     var pathComponents: [(String, String)] {
         var components: [(String, String)] = []
-        let parts = path.split(separator: "/").map(String.init)
-        
-        var currentPath = ""
+        let root = (rootPath as NSString).standardizingPath
+        let current = (path as NSString).standardizingPath
+        let relativePath: String
+        if root == "/" {
+            relativePath = String(current.dropFirst())
+        } else if current == root {
+            relativePath = ""
+        } else {
+            relativePath = String(current.dropFirst(root.count + 1))
+        }
+        let parts = relativePath.split(separator: "/").map(String.init)
+
+        var currentPath = root
         for part in parts {
-            currentPath += "/\(part)"
+            currentPath = (currentPath as NSString).appendingPathComponent(part)
             components.append((part, currentPath))
         }
         
@@ -22,8 +33,7 @@ struct BreadcrumbView: View {
             HStack(spacing: 4) {
                 // Root
                 Button(action: {
-                    // UIからHomeを押した場合でも、navigateTo内部で境界チェックが行われる
-                    onNavigate("/") 
+                    onNavigate((rootPath as NSString).standardizingPath)
                 }) {
                     Image(systemName: "house")
                 }
@@ -46,5 +56,5 @@ struct BreadcrumbView: View {
 }
 
 #Preview {
-    BreadcrumbView(path: "/home/user/documents") { _ in }
+    BreadcrumbView(path: "/home/user/documents", rootPath: "/home/user") { _ in }
 }

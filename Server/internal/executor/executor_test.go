@@ -1,10 +1,11 @@
 package executor
 
 import (
-	"github.com/yude/file-exploder/server/internal/queue"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/yude/file-exploder/server/internal/queue"
 )
 
 func TestValidatePaths(t *testing.T) {
@@ -23,9 +24,114 @@ func TestValidatePaths(t *testing.T) {
 		t.Error("Expected error for ../ path")
 	}
 
+	err = validatePaths("relative/path")
+	if err == nil {
+		t.Error("Expected error for relative path")
+	}
+
 	err = validatePaths("/valid/path")
 	if err != nil {
 		t.Errorf("Unexpected error for valid path: %v", err)
+	}
+}
+
+func TestCopyFileDoesNotOverwrite(t *testing.T) {
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "source")
+	dst := filepath.Join(tmpDir, "destination")
+	if err := os.WriteFile(src, []byte("source"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyPath(src, dst); err == nil {
+		t.Fatal("copy unexpectedly overwrote an existing destination")
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "keep" {
+		t.Fatalf("destination changed: %q", data)
+	}
+}
+
+func TestCopyDirectoryIsStagedAndPreservesSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "source")
+	dst := filepath.Join(tmpDir, "destination")
+	if err := os.Mkdir(src, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "file"), []byte("content"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("file", filepath.Join(src, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyPath(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	link, err := os.Readlink(filepath.Join(dst, "link"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link != "file" {
+		t.Fatalf("unexpected symlink target: %q", link)
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0750 {
+		t.Fatalf("directory mode = %o, want 750", info.Mode().Perm())
+	}
+}
+
+func TestCopyDirectoryRejectsSymlinkedDescendant(t *testing.T) {
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "source")
+	if err := os.Mkdir(src, 0755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(tmpDir, "alias")
+	if err := os.Symlink(src, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyPath(src, filepath.Join(alias, "nested")); err == nil {
+		t.Fatal("copy into a symlinked descendant unexpectedly succeeded")
+	}
+}
+
+func TestCopyDoesNotCreateMissingParents(t *testing.T) {
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "source")
+	if err := os.WriteFile(src, []byte("content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(tmpDir, "missing", "destination")
+	if err := copyPath(src, dst); err == nil {
+		t.Fatal("copy unexpectedly created missing destination parents")
+	}
+	if _, err := os.Stat(filepath.Dir(dst)); !os.IsNotExist(err) {
+		t.Fatalf("destination parent was created: %v", err)
+	}
+}
+
+func TestParseFileMode(t *testing.T) {
+	for _, valid := range []string{"0", "600", "0755"} {
+		if _, err := parseFileMode(valid); err != nil {
+			t.Errorf("parseFileMode(%q): %v", valid, err)
+		}
+	}
+	for _, invalid := range []string{"", "888", "755junk", "4755"} {
+		if _, err := parseFileMode(invalid); err == nil {
+			t.Errorf("parseFileMode(%q) unexpectedly succeeded", invalid)
+		}
 	}
 }
 
@@ -52,5 +158,30 @@ func TestExecuteMkdirAndDelete(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(tmpDir, "new_dir")); !os.IsNotExist(err) {
 		t.Fatal("Directory was not deleted")
+	}
+}
+
+func TestExecuteChmodRejectsSymlink(t *testing.T) {
+	e := NewExecutor(nil)
+	tmpDir := t.TempDir()
+	target := filepath.Join(tmpDir, "target")
+	link := filepath.Join(tmpDir, "link")
+	if err := os.WriteFile(target, []byte("content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	err := e.Execute(&queue.Job{Type: queue.JobChmod, DstPath: link, Mode: "0777"})
+	if err == nil {
+		t.Fatal("chmod unexpectedly followed a symbolic link")
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("target mode changed to %o", info.Mode().Perm())
 	}
 }

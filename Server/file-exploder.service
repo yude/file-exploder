@@ -4,9 +4,10 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/file-exploder daemon
-Restart=always
+ExecStart=%h/.local/bin/file-exploder daemon
+Restart=on-failure
 RestartSec=5
+UMask=0077
 
 [Install]
 WantedBy=default.target

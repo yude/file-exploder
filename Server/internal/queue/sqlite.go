@@ -90,7 +90,10 @@ func (q *SQLiteQueue) StartJob(id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	rows, _ := result.RowsAffected()
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
 	return rows > 0, nil
 }
 
@@ -98,27 +101,56 @@ func (q *SQLiteQueue) UpdateStatus(id string, status JobStatus, errMsg string) e
 	now := time.Now()
 	switch status {
 	case StatusRunning:
-		_, err := q.db.Exec(`UPDATE jobs SET status=?, started_at=?, error='' WHERE id=?`, status, now, id)
-		return err
+		started, err := q.StartJob(id)
+		if err != nil {
+			return err
+		}
+		if !started {
+			return fmt.Errorf("job %s is no longer pending", id)
+		}
+		return nil
 	case StatusCompleted:
-		_, err := q.db.Exec(`UPDATE jobs SET status=?, completed_at=?, error='' WHERE id=?`, status, now, id)
-		return err
+		return q.finishRunningJob(id, status, "", now)
 	case StatusFailed:
-		_, err := q.db.Exec(`UPDATE jobs SET status=?, completed_at=?, error=? WHERE id=?`, status, now, errMsg, id)
-		return err
+		return q.finishRunningJob(id, status, errMsg, now)
 	default:
-		_, err := q.db.Exec(`UPDATE jobs SET status=? WHERE id=?`, status, id)
-		return err
+		return fmt.Errorf("unsupported status transition to %s", status)
 	}
 }
 
+func (q *SQLiteQueue) finishRunningJob(id string, status JobStatus, errMsg string, completedAt time.Time) error {
+	result, err := q.db.Exec(
+		`UPDATE jobs SET status=?, completed_at=?, error=? WHERE id=? AND status='running'`,
+		status, completedAt, errMsg, id,
+	)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("job %s is no longer running", id)
+	}
+	return nil
+}
+
 func (q *SQLiteQueue) GetPendingJobs() ([]*Job, error) {
+	return q.queryJobs(`SELECT id, type, src_path, dst_path, mode, status, error, created_at, started_at, completed_at
+		FROM jobs WHERE status = 'pending' ORDER BY created_at ASC`)
+}
+
+func (q *SQLiteQueue) GetActiveJobs() ([]*Job, error) {
 	return q.queryJobs(`SELECT id, type, src_path, dst_path, mode, status, error, created_at, started_at, completed_at
 		FROM jobs WHERE status IN ('pending', 'running') ORDER BY created_at ASC`)
 }
 
 func (q *SQLiteQueue) ResetRunningJobs() error {
-	_, err := q.db.Exec(`UPDATE jobs SET status = 'failed', error = 'Daemon crashed before completion' WHERE status = 'running'`)
+	_, err := q.db.Exec(
+		`UPDATE jobs SET status='failed', error='daemon stopped before completion', completed_at=? WHERE status='running'`,
+		time.Now(),
+	)
 	return err
 }
 
@@ -129,16 +161,22 @@ func (q *SQLiteQueue) GetAllJobs() ([]*Job, error) {
 
 func (q *SQLiteQueue) CancelJob(id string) error {
 	// First update the status if pending
-	result, err := q.db.Exec(`UPDATE jobs SET status='cancelled' WHERE id=? AND status = 'pending'`, id)
+	result, err := q.db.Exec(
+		`UPDATE jobs SET status='cancelled', completed_at=? WHERE id=? AND status='pending'`,
+		time.Now(), id,
+	)
 	if err != nil {
 		return err
 	}
-	rows, _ := result.RowsAffected()
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
 	if rows > 0 {
 		return nil // Successfully cancelled pending job
 	}
 
-	// For running jobs, we cannot safely cancel via DB update alone because the 
+	// For running jobs, we cannot safely cancel via DB update alone because the
 	// executor process is already acting on files (os.Rename, os.MkdirAll, io.Copy etc).
 	// Writing 'cancelled' to the DB while it's running will just result in the executor
 	// overwriting it with 'completed' or 'failed' moments later.
@@ -151,8 +189,12 @@ func (q *SQLiteQueue) GetRecentLogs(limit int) ([]*Job, error) {
 	if limit <= 0 {
 		limit = 50
 	}
+	if limit > 1000 {
+		limit = 1000
+	}
 	return q.queryJobs(fmt.Sprintf(`SELECT id, type, src_path, dst_path, mode, status, error, created_at, started_at, completed_at
-		FROM jobs ORDER BY completed_at DESC, created_at DESC LIMIT %d`, limit))
+		FROM jobs WHERE status IN ('completed', 'failed', 'cancelled')
+		ORDER BY completed_at DESC, created_at DESC LIMIT %d`, limit))
 }
 
 func (q *SQLiteQueue) queryJobs(query string, args ...interface{}) ([]*Job, error) {
@@ -162,7 +204,7 @@ func (q *SQLiteQueue) queryJobs(query string, args ...interface{}) ([]*Job, erro
 	}
 	defer rows.Close()
 
-	var jobs []*Job
+	jobs := make([]*Job, 0)
 	for rows.Next() {
 		job := &Job{}
 		var startedAt, completedAt sql.NullTime

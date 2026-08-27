@@ -9,279 +9,253 @@ class FileListViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var pathHistory: [String] = []
     @Published var pathHistoryIndex: Int = -1
-    
+
     @AppStorage("showHiddenFiles") private var showHiddenFiles = false
     @AppStorage("refreshInterval") private var refreshInterval = 5.0
     private var refreshTask: Task<Void, Never>?
     private var navigationGeneration = 0
     private var settingsObserver: NSObjectProtocol?
-    private var sshTasks: [Task<Void, Never>] = []
-    
+
     private(set) var sftp: SFTPService?
     private var ssh: SSHConnection?
-    
-    var canGoBack: Bool {
-        pathHistoryIndex > 0
+
+    var canGoBack: Bool { pathHistoryIndex > 0 }
+    var canGoForward: Bool { pathHistoryIndex < pathHistory.count - 1 }
+
+    var remoteRoot: String {
+        guard let root = ssh?.server.remoteRoot else { return "/" }
+        return (root as NSString).standardizingPath
     }
-    
-    var canGoForward: Bool {
-        pathHistoryIndex < pathHistory.count - 1
+
+    var canGoToParent: Bool {
+        let parent = (currentPath as NSString).deletingLastPathComponent
+        return parent != currentPath && isPathAllowed(parent)
     }
-    
+
     func connect(server: Server) async {
+        disconnect()
         let sshConnection = SSHConnection(server: server)
-        self.ssh = sshConnection
-        self.sftp = SFTPService(ssh: sshConnection)
-        
-        // start observing setting changes before connecting to ensure clean state
-        if let obs = settingsObserver {
-            NotificationCenter.default.removeObserver(obs)
-        }
-        settingsObserver = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: nil) { [weak self] _ in
-            let task = Task { [weak self] in
-                await self?.startAutoRefresh()
+        ssh = sshConnection
+        sftp = SFTPService(ssh: sshConnection)
+
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
                 await self?.refresh()
             }
-            self?.sshTasks.append(task)
         }
-        
+
         do {
             try await sshConnection.testConnection()
+            guard ssh === sshConnection else { return }
             await navigateTo(path: server.remoteRoot)
+            if let message = errorMessage {
+                disconnect()
+                errorMessage = message
+            }
         } catch {
-            errorMessage = error.localizedDescription
+            guard ssh === sshConnection else { return }
+            let message = error.localizedDescription
+            disconnect()
+            errorMessage = message
         }
     }
-    
+
     func disconnect() {
-        // 現在実行中のプロセスがあればキャンセルする
-        self.ssh?.terminateAll()
-        
-        for task in sshTasks {
-            task.cancel()
-        }
-        sshTasks.removeAll()
-        
+        ssh?.terminateAll()
         refreshTask?.cancel()
         refreshTask = nil
         navigationGeneration += 1
-        if let obs = settingsObserver {
-            NotificationCenter.default.removeObserver(obs)
+        if let observer = settingsObserver {
+            NotificationCenter.default.removeObserver(observer)
             settingsObserver = nil
         }
-        
-        self.ssh = nil
-        self.sftp = nil
-        self.files = []
-        self.currentPath = "/"
-        self.pathHistory = []
-        self.pathHistoryIndex = -1
-        self.errorMessage = nil
-        self.isLoading = false
+
+        ssh = nil
+        sftp = nil
+        files = []
+        currentPath = "/"
+        pathHistory = []
+        pathHistoryIndex = -1
+        errorMessage = nil
+        isLoading = false
     }
-    
+
     func navigateTo(path: String) async {
-        // 接続サーバーのルートより上には行けないようにする
-        if let serverRoot = ssh?.server.remoteRoot {
-            let rootPath = (serverRoot as NSString).standardizingPath
-            let targetPath = (path as NSString).standardizingPath
-            if !targetPath.hasPrefix(rootPath) && targetPath != rootPath {
-                errorMessage = "アクセスが許可されていません"
-                return
-            }
+        guard isPathAllowed(path) else {
+            errorMessage = "アクセスが許可されていません"
+            return
         }
-        
-        await loadPath(path, updateHistory: true)
-        startAutoRefresh()
+        if await loadPath(path, updateHistory: true) {
+            startAutoRefresh()
+        }
     }
-    
+
     func goBack() async {
         guard canGoBack else { return }
-        pathHistoryIndex -= 1
-        let path = pathHistory[pathHistoryIndex]
-        await loadPath(path, updateHistory: false)
+        let newIndex = pathHistoryIndex - 1
+        if await loadPath(pathHistory[newIndex], updateHistory: false) {
+            pathHistoryIndex = newIndex
+            startAutoRefresh()
+        }
     }
-    
+
     func goForward() async {
         guard canGoForward else { return }
-        pathHistoryIndex += 1
-        let path = pathHistory[pathHistoryIndex]
-        await loadPath(path, updateHistory: false)
+        let newIndex = pathHistoryIndex + 1
+        if await loadPath(pathHistory[newIndex], updateHistory: false) {
+            pathHistoryIndex = newIndex
+            startAutoRefresh()
+        }
     }
-    
+
     func goToParent() async {
         let parent = (currentPath as NSString).deletingLastPathComponent
-        guard parent != currentPath else { return }
-        
-        // 接続サーバーのルートより上には行けないようにする
-        if let serverRoot = ssh?.server.remoteRoot {
-            let rootPath = (serverRoot as NSString).standardizingPath
-            let targetPath = (parent as NSString).standardizingPath
-            if !targetPath.hasPrefix(rootPath) && targetPath != rootPath {
-                errorMessage = "アクセスが許可されていません"
-                return
-            }
-        }
-        
+        guard parent != currentPath, isPathAllowed(parent) else { return }
         await navigateTo(path: parent)
     }
-    
+
     func refresh() async {
-        await loadPath(currentPath, updateHistory: false)
+        if await loadPath(currentPath, updateHistory: false) {
+            startAutoRefresh()
+        }
     }
-    
+
     func openFile(_ file: RemoteFile) async {
         if file.isDirectory {
             await navigateTo(path: file.path)
         }
     }
-    
+
     func createFolder(name: String) async {
-        guard let sftp = sftp else { return }
-        let newPath = "\(currentPath)/\(name)"
+        guard let sftp, let newPath = childPath(named: name) else {
+            errorMessage = "フォルダ名に /、.、.. は使用できません"
+            return
+        }
         var finalError: String?
         do {
             let id = try await sftp.addToQueue(type: "mkdir", src: nil, dst: newPath)
-            try await sftp.waitForJob(id: id, timeout: 60.0)
+            try await sftp.waitForJob(id: id)
         } catch {
             finalError = "フォルダ作成エラー: \(error.localizedDescription)"
         }
-        if let err = finalError {
-            errorMessage = err
-        }
-        await refresh()
+        await refreshThenReport(finalError.map { [$0] } ?? [])
     }
-    
+
     func deleteFiles(_ files: [RemoteFile]) async {
-        guard let sftp = sftp else { return }
-        var waitIds: [String] = []
+        guard let sftp else { return }
+        var waitIDs: [String] = []
         var finalErrors: [String] = []
         for file in files {
+            guard isPathAllowed(file.path) else {
+                finalErrors.append("削除対象が許可範囲外です: \(file.path)")
+                continue
+            }
             do {
-                let id = try await sftp.addToQueue(type: "delete", src: file.path, dst: nil)
-                waitIds.append(id)
+                waitIDs.append(try await sftp.addToQueue(type: "delete", src: file.path, dst: nil))
             } catch {
                 finalErrors.append("削除登録エラー (\(file.name)): \(error.localizedDescription)")
             }
         }
-        for id in waitIds {
+        for id in waitIDs {
             do {
-                try await sftp.waitForJob(id: id, timeout: 60.0)
+                try await sftp.waitForJob(id: id)
             } catch {
                 finalErrors.append("削除エラー: \(error.localizedDescription)")
             }
         }
-        if !finalErrors.isEmpty {
-            errorMessage = finalErrors.joined(separator: "\n")
-        }
-        await refresh()
+        await refreshThenReport(finalErrors)
     }
-    
+
     func renameFile(_ file: RemoteFile, to newName: String) async {
-        guard let sftp = sftp else { return }
-        let newPath = "\(currentPath)/\(newName)"
+        guard let sftp else { return }
+        guard isPathAllowed(file.path), let newPath = childPath(named: newName) else {
+            errorMessage = "名前に /、.、.. は使用できません"
+            return
+        }
         var finalError: String?
         do {
             let id = try await sftp.addToQueue(type: "rename", src: file.path, dst: newPath)
-            try await sftp.waitForJob(id: id, timeout: 60.0)
+            try await sftp.waitForJob(id: id)
         } catch {
             finalError = "名前変更エラー: \(error.localizedDescription)"
         }
-        if let err = finalError {
-            errorMessage = err
-        }
-        await refresh()
+        await refreshThenReport(finalError.map { [$0] } ?? [])
     }
-    
+
     func copyFiles(_ files: [RemoteFile], to destination: String) async {
-        guard let sftp = sftp else { return }
-        var waitIds: [String] = []
-        var finalErrors: [String] = []
-        for file in files {
-            let destPath = "\(destination)/\(file.name)"
-            do {
-                let id = try await sftp.addToQueue(type: "copy", src: file.path, dst: destPath)
-                waitIds.append(id)
-            } catch {
-                finalErrors.append("コピー登録エラー (\(file.name)): \(error.localizedDescription)")
-            }
-        }
-        for id in waitIds {
-            do {
-                try await sftp.waitForJob(id: id, timeout: 60.0)
-            } catch {
-                finalErrors.append("コピーエラー: \(error.localizedDescription)")
-            }
-        }
-        if !finalErrors.isEmpty {
-            errorMessage = finalErrors.joined(separator: "\n")
-        }
-        await refresh()
+        await transferFiles(files, to: destination, type: "copy")
     }
-    
+
     func moveFiles(_ files: [RemoteFile], to destination: String) async {
-        guard let sftp = sftp else { return }
-        var waitIds: [String] = []
+        await transferFiles(files, to: destination, type: "move")
+    }
+
+    private func transferFiles(_ files: [RemoteFile], to destination: String, type: String) async {
+        guard let sftp else { return }
+        guard isPathAllowed(destination) else {
+            errorMessage = type == "copy" ? "複製先が許可範囲外です" : "移動先が許可範囲外です"
+            return
+        }
+        var waitIDs: [String] = []
         var finalErrors: [String] = []
         for file in files {
-            let destPath = "\(destination)/\(file.name)"
+            guard isPathAllowed(file.path) else {
+                finalErrors.append("対象が許可範囲外です: \(file.path)")
+                continue
+            }
+            let destinationPath = (destination as NSString).appendingPathComponent(file.name)
             do {
-                let id = try await sftp.addToQueue(type: "move", src: file.path, dst: destPath)
-                waitIds.append(id)
+                waitIDs.append(try await sftp.addToQueue(type: type, src: file.path, dst: destinationPath))
             } catch {
-                finalErrors.append("移動登録エラー (\(file.name)): \(error.localizedDescription)")
+                finalErrors.append("登録エラー (\(file.name)): \(error.localizedDescription)")
             }
         }
-        for id in waitIds {
+        for id in waitIDs {
             do {
-                try await sftp.waitForJob(id: id, timeout: 60.0)
+                try await sftp.waitForJob(id: id)
             } catch {
-                finalErrors.append("移動エラー: \(error.localizedDescription)")
+                let actionName = type == "copy" ? "コピー" : "移動"
+                finalErrors.append("\(actionName)エラー: \(error.localizedDescription)")
             }
         }
-        if !finalErrors.isEmpty {
-            errorMessage = finalErrors.joined(separator: "\n")
-        }
-        await refresh()
+        await refreshThenReport(finalErrors)
     }
-    
+
     func changePermissions(_ file: RemoteFile, mode: String) async {
-        guard let sftp = sftp else { return }
+        guard let sftp else { return }
+        guard isPathAllowed(file.path) else {
+            errorMessage = "権限変更対象が許可範囲外です"
+            return
+        }
         var finalError: String?
         do {
             let id = try await sftp.addToQueue(type: "chmod", src: nil, dst: file.path, mode: mode)
-            try await sftp.waitForJob(id: id, timeout: 60.0)
+            try await sftp.waitForJob(id: id)
         } catch {
             finalError = "権限変更エラー (\(file.name)): \(error.localizedDescription)"
         }
-        if let err = finalError {
-            errorMessage = err
-        }
-        await refresh()
+        await refreshThenReport(finalError.map { [$0] } ?? [])
     }
-    
-    private func loadPath(_ path: String, updateHistory: Bool) async {
-        guard let sftp = sftp else { return }
-        
+
+    @discardableResult
+    private func loadPath(_ path: String, updateHistory: Bool) async -> Bool {
+        guard let sftp, isPathAllowed(path) else {
+            if self.sftp != nil { errorMessage = "アクセスが許可されていません" }
+            return false
+        }
+
         navigationGeneration += 1
         let currentGeneration = navigationGeneration
-        
-        // Final sanity check before making external call
-        if let serverRoot = ssh?.server.remoteRoot {
-            let rootPath = (serverRoot as NSString).standardizingPath
-            let targetPath = (path as NSString).standardizingPath
-            if !targetPath.hasPrefix(rootPath) && targetPath != rootPath {
-                errorMessage = "アクセスが許可されていません"
-                return
-            }
-        }
-        
         isLoading = true
         errorMessage = nil
         do {
             let fileList = try await sftp.listDirectory(path: path)
-            guard currentGeneration == navigationGeneration else { return }
-            
+            guard currentGeneration == navigationGeneration else { return false }
+
             if updateHistory {
                 if pathHistoryIndex < pathHistory.count - 1 {
                     pathHistory = Array(pathHistory.prefix(pathHistoryIndex + 1))
@@ -289,52 +263,73 @@ class FileListViewModel: ObservableObject {
                 pathHistory.append(path)
                 pathHistoryIndex = pathHistory.count - 1
             }
-            
+
             currentPath = path
-            let visibleFiles = showHiddenFiles ? fileList : fileList.filter { !$0.name.hasPrefix(".") }
-            files = visibleFiles.sorted { lhs, rhs in
-                if lhs.isDirectory != rhs.isDirectory {
-                    return lhs.isDirectory
-                }
-                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-            }
+            files = sortedVisibleFiles(fileList)
         } catch {
-            guard currentGeneration == navigationGeneration else { return }
+            guard currentGeneration == navigationGeneration else { return false }
             errorMessage = error.localizedDescription
-        }
-        
-        if currentGeneration == navigationGeneration {
             isLoading = false
+            return false
         }
+        isLoading = false
+        return true
     }
-    
+
     private func startAutoRefresh() {
         refreshTask?.cancel()
-        guard refreshInterval > 0 else { return }
-        
+        guard sftp != nil, refreshInterval.isFinite, refreshInterval > 0 else { return }
+        let interval = min(refreshInterval, 300)
         let startGeneration = navigationGeneration
+
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self = self else { break }
-                try? await Task.sleep(nanoseconds: UInt64(self.refreshInterval * 1_000_000_000))
-                guard !Task.isCancelled else { break }
-                guard startGeneration == self.navigationGeneration else { break }
-                
-                // Background refresh without showing loading indicator
+                guard let self else { break }
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard !Task.isCancelled, startGeneration == self.navigationGeneration else { break }
                 if let sftp = self.sftp {
-                    let currentPath = self.currentPath
-                    if let fileList = try? await sftp.listDirectory(path: currentPath) {
-                        guard !Task.isCancelled else { break }
-                        guard startGeneration == self.navigationGeneration else { break }
-                        let showHidden = self.showHiddenFiles
-                        let visibleFiles = showHidden ? fileList : fileList.filter { !$0.name.hasPrefix(".") }
-                        self.files = visibleFiles.sorted { lhs, rhs in
-                            if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
-                            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-                        }
+                    let path = self.currentPath
+                    if let fileList = try? await sftp.listDirectory(path: path) {
+                        guard !Task.isCancelled, startGeneration == self.navigationGeneration else { break }
+                        self.files = self.sortedVisibleFiles(fileList)
                     }
                 }
             }
         }
+    }
+
+    private func sortedVisibleFiles(_ fileList: [RemoteFile]) -> [RemoteFile] {
+        let visible = showHiddenFiles ? fileList : fileList.filter { !$0.name.hasPrefix(".") }
+        return visible.sorted { lhs, rhs in
+            if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    private func isPathAllowed(_ path: String) -> Bool {
+        guard ssh != nil else { return false }
+        let root = remoteRoot
+        let target = (path as NSString).standardizingPath
+        guard root.hasPrefix("/"), target.hasPrefix("/") else { return false }
+        if root == "/" { return true }
+        return target == root || target.hasPrefix(root + "/")
+    }
+
+    private func childPath(named name: String) -> String? {
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
+            return nil
+        }
+        let path = (currentPath as NSString).appendingPathComponent(name)
+        return isPathAllowed(path) ? path : nil
+    }
+
+    private func refreshThenReport(_ operationErrors: [String]) async {
+        await refresh()
+        guard !operationErrors.isEmpty else { return }
+        var errors = operationErrors
+        if let refreshError = errorMessage {
+            errors.append("一覧更新エラー: \(refreshError)")
+        }
+        errorMessage = errors.joined(separator: "\n")
     }
 }

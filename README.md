@@ -36,17 +36,20 @@ chmod +x install.sh
 ./install.sh
 ```
 
-Or manually:
+The installer must be run as the same Linux user used by the macOS client's
+SSH connection. It installs the binary in `~/.local/bin` and a per-user systemd
+service, so the CLI and daemon share both filesystem permissions and the same
+queue database. Do not run it with `sudo`.
+
+To keep the service running after that user logs out, an administrator can run:
 
 ```bash
-cd Server
-go build -buildvcs=false -o file-exploder .
-sudo cp file-exploder /usr/local/bin/
-sudo cp file-exploder.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable file-exploder
-sudo systemctl start file-exploder
+sudo loginctl enable-linger <ssh-user>
 ```
+
+Check it with `systemctl --user status file-exploder`. The client's configured
+remote root is a navigation boundary, not an operating-system sandbox; the
+daemon has exactly the access rights of the SSH user.
 
 ### Client (macOS)
 

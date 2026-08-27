@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 struct FileListView: View {
     @ObservedObject var viewModel: FileListViewModel
@@ -9,9 +12,11 @@ struct FileListView: View {
     @State private var newFolderName = ""
     @State private var renamingFile: RemoteFile?
     @State private var renameText = ""
-    @State private var movingFile: RemoteFile?
+    @State private var filesToMove: [RemoteFile] = []
+    @State private var showMoveSheet = false
     @State private var moveDestinationText = ""
-    @State private var copyingFile: RemoteFile?
+    @State private var filesToCopy: [RemoteFile] = []
+    @State private var showCopySheet = false
     
     @State private var showingDeleteConfirmation = false
     @State private var filesToDelete: [RemoteFile] = []
@@ -31,7 +36,7 @@ struct FileListView: View {
             Divider()
             
             // Breadcrumb
-            BreadcrumbView(path: viewModel.currentPath) { path in
+            BreadcrumbView(path: viewModel.currentPath, rootPath: viewModel.remoteRoot) { path in
                 Task { await viewModel.navigateTo(path: path) }
             }
             .padding(.horizontal)
@@ -93,8 +98,8 @@ struct FileListView: View {
                     }
                     .width(min: 120, ideal: 150)
                     
-                    TableColumn("権限", value: \.permissions.symbolicString) { file in
-                        Text(file.permissions.symbolicString)
+                    TableColumn("権限", value: \.symbolicPermissions) { file in
+                        Text(file.symbolicPermissions)
                             .font(.system(.body, design: .monospaced))
                             .foregroundColor(.secondary)
                     }
@@ -103,7 +108,7 @@ struct FileListView: View {
                 .contextMenu(forSelectionType: String.self) { selection in
                     if let fileId = selection.first,
                        let file = filteredFiles.first(where: { $0.id == fileId }) {
-                        fileContextMenu(file: file)
+                        fileContextMenu(file: file, selection: selection)
                     }
                 } primaryAction: { selection in
                     if let fileId = selection.first,
@@ -116,37 +121,47 @@ struct FileListView: View {
         .searchable(text: $searchText, prompt: "ファイルを検索")
         .sheet(isPresented: $showNewFolderSheet) {
             NewFolderSheet(name: $newFolderName) {
+                let name = newFolderName
+                newFolderName = ""
+                showNewFolderSheet = false
                 Task {
-                    await viewModel.createFolder(name: newFolderName)
-                    newFolderName = ""
-                    showNewFolderSheet = false
+                    await viewModel.createFolder(name: name)
                 }
             }
         }
         .sheet(item: $renamingFile) { file in
             RenameSheet(name: $renameText) {
+                let name = renameText
+                renameText = ""
+                renamingFile = nil
                 Task {
-                    await viewModel.renameFile(file, to: renameText)
-                    renameText = ""
-                    renamingFile = nil
+                    await viewModel.renameFile(file, to: name)
                 }
             }
         }
-        .sheet(item: $movingFile) { file in
+        .sheet(isPresented: $showMoveSheet, onDismiss: {
+            filesToMove = []
+            moveDestinationText = ""
+        }) {
             MoveSheet(destination: $moveDestinationText) {
+                let files = filesToMove
+                let destination = moveDestinationText
+                showMoveSheet = false
                 Task {
-                    await viewModel.moveFiles([file], to: moveDestinationText)
-                    moveDestinationText = ""
-                    movingFile = nil
+                    await viewModel.moveFiles(files, to: destination)
                 }
             }
         }
-        .sheet(item: $copyingFile) { file in
+        .sheet(isPresented: $showCopySheet, onDismiss: {
+            filesToCopy = []
+            moveDestinationText = ""
+        }) {
             MoveSheet(destination: $moveDestinationText, isCopy: true) {
+                let files = filesToCopy
+                let destination = moveDestinationText
+                showCopySheet = false
                 Task {
-                    await viewModel.copyFiles([file], to: moveDestinationText)
-                    moveDestinationText = ""
-                    copyingFile = nil
+                    await viewModel.copyFiles(files, to: destination)
                 }
             }
         }
@@ -172,6 +187,9 @@ struct FileListView: View {
                 Text("\(filesToDelete.count) 項目を完全に削除します。元に戻せません。")
             }
         }
+        .onChange(of: viewModel.files.map(\.id)) { _, currentIDs in
+            selectedFiles.formIntersection(currentIDs)
+        }
     }
     
     // MARK: - Toolbar
@@ -193,6 +211,7 @@ struct FileListView: View {
                 Button(action: { Task { await viewModel.goToParent() } }) {
                     Image(systemName: "chevron.up")
                 }
+                .disabled(!viewModel.canGoToParent)
             }
             .buttonStyle(.borderless)
             
@@ -228,7 +247,7 @@ struct FileListView: View {
     // MARK: - Context Menu
     
     @ViewBuilder
-    private func fileContextMenu(file: RemoteFile) -> some View {
+    private func fileContextMenu(file: RemoteFile, selection: Set<String>) -> some View {
         Group {
             if file.isDirectory {
                 Button("開く") {
@@ -245,46 +264,23 @@ struct FileListView: View {
             
             Button("移動") {
                 moveDestinationText = viewModel.currentPath
-                movingFile = file
+                filesToMove = actionFiles(selection: selection, fallback: file)
+                showMoveSheet = true
             }
             
             Button("サーバー内で複製") {
-                let toCopy = filteredFiles.filter { selectedFiles.contains($0.id) }
-                if toCopy.isEmpty, let file = filteredFiles.first(where: { $0.id == file.id }) {
-                    moveDestinationText = viewModel.currentPath
-                    copyingFile = file
-                } else if !toCopy.isEmpty {
-                    if let file = toCopy.first {
-                        moveDestinationText = viewModel.currentPath
-                        copyingFile = file
-                    }
-                }
+                moveDestinationText = viewModel.currentPath
+                filesToCopy = actionFiles(selection: selection, fallback: file)
+                showCopySheet = true
             }
             
             Button("パスをコピー") {
-                let toCopy = filteredFiles.filter { selectedFiles.contains($0.id) }
-                if toCopy.isEmpty, let file = filteredFiles.first(where: { $0.id == file.id }) {
-                    let pb = NSPasteboard.general
-                    pb.clearContents()
-                    pb.setString(file.path, forType: .string)
-                } else if !toCopy.isEmpty {
-                    let pb = NSPasteboard.general
-                    pb.clearContents()
-                    let paths = toCopy.map { $0.path }
-                    pb.writeObjects(paths as [NSString])
-                }
-            }
-            
-            Button("パスをコピー") {
-                let toCopy = filteredFiles.filter { selectedFiles.contains($0.id) }
-                if toCopy.isEmpty, let file = filteredFiles.first(where: { $0.id == file.id }) {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(file.path, forType: .string)
-                } else if !toCopy.isEmpty {
-                    NSPasteboard.general.clearContents()
-                    let paths = toCopy.map { $0.path }
-                    NSPasteboard.general.writeObjects(paths as [NSString])
-                }
+                let paths = actionFiles(selection: selection, fallback: file).map(\.path)
+                #if os(macOS)
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(paths.joined(separator: "\n"), forType: .string)
+                #endif
             }
             
             Divider()
@@ -300,10 +296,15 @@ struct FileListView: View {
             Divider()
             
             Button("削除", role: .destructive) {
-                filesToDelete = [file]
+                filesToDelete = actionFiles(selection: selection, fallback: file)
                 showingDeleteConfirmation = true
             }
         }
+    }
+
+    private func actionFiles(selection: Set<String>, fallback file: RemoteFile) -> [RemoteFile] {
+        let selected = filteredFiles.filter { selection.contains($0.id) }
+        return selected.isEmpty ? [file] : selected
     }
     
     private func fileIcon(for file: RemoteFile) -> String {
