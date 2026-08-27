@@ -263,3 +263,24 @@ func TestExecuteMkdirRefusesAnExistingPath(t *testing.T) {
 		t.Fatalf("nested directory not created: %v", err)
 	}
 }
+
+func TestExecuteMkdirAcceptsATrailingSeparator(t *testing.T) {
+	e := NewExecutor(nil)
+	tmpDir := t.TempDir()
+
+	// filepath.Dir("/a/b/") is "/a/b", so an uncleaned path made MkdirAll
+	// create the leaf and Mkdir then reject the directory it had just made.
+	target := filepath.Join(tmpDir, "with-slash") + string(filepath.Separator)
+	if err := e.Execute(&queue.Job{Type: queue.JobMkdir, DstPath: target}); err != nil {
+		t.Fatalf("mkdir with a trailing separator failed: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(tmpDir, "with-slash"))
+	if err != nil || !info.IsDir() {
+		t.Fatalf("directory not created: %v", err)
+	}
+
+	// Repeating it must still be refused.
+	if err := e.Execute(&queue.Job{Type: queue.JobMkdir, DstPath: target}); err == nil {
+		t.Fatal("second mkdir over the same directory unexpectedly succeeded")
+	}
+}

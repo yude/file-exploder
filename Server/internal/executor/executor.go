@@ -120,12 +120,18 @@ func (e *Executor) executeMkdir(job *queue.Job) error {
 	// followed by MkdirAll has a race: another process can create the leaf in
 	// between, after which MkdirAll reports success and this job incorrectly
 	// claims it created the directory.
-	if err := os.MkdirAll(filepath.Dir(job.DstPath), 0755); err != nil {
+	//
+	// Clean first: filepath.Dir("/a/b/") is "/a/b", so a trailing separator
+	// would make MkdirAll create the leaf as if it were the parent and Mkdir
+	// then fail with "already exists" - against a directory this job had just
+	// created itself.
+	dst := filepath.Clean(job.DstPath)
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return err
 	}
-	if err := os.Mkdir(job.DstPath, 0755); err != nil {
+	if err := os.Mkdir(dst, 0755); err != nil {
 		if errors.Is(err, fs.ErrExist) {
-			return fmt.Errorf("destination path already exists: %s", job.DstPath)
+			return fmt.Errorf("destination path already exists: %s", dst)
 		}
 		return err
 	}
