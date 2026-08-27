@@ -1,4 +1,4 @@
-# RemoteFS (file-exploder)
+# file-exploder
 
 A native macOS SSH remote file manager with server-side operation queuing.
 
