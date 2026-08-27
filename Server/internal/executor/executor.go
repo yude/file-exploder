@@ -43,12 +43,25 @@ func (e *Executor) executeRename(job *queue.Job) error {
 	if err := validatePaths(job.SrcPath, job.DstPath); err != nil {
 		return err
 	}
-	if filepath.Clean(job.SrcPath) == filepath.Clean(job.DstPath) {
-		_, err := os.Lstat(job.SrcPath)
+	srcInfo, err := os.Lstat(job.SrcPath)
+	if err != nil {
 		return err
 	}
+	// A no-op rename onto the same path succeeds as long as the source exists.
+	if filepath.Clean(job.SrcPath) == filepath.Clean(job.DstPath) {
+		return nil
+	}
+	if srcInfo.IsDir() {
+		inside, err := destinationInsideSource(job.SrcPath, job.DstPath)
+		if err != nil {
+			return err
+		}
+		if inside {
+			return fmt.Errorf("cannot move a directory into itself: %s", job.DstPath)
+		}
+	}
 
-	err := renameNoReplace(job.SrcPath, job.DstPath)
+	err = renameNoReplace(job.SrcPath, job.DstPath)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("destination path already exists: %s", job.DstPath)
@@ -155,15 +168,7 @@ func copyPath(src, dst string) error {
 		return err
 	}
 	if info.IsDir() {
-		resolvedSrc, err := filepath.EvalSymlinks(cleanedSrc)
-		if err != nil {
-			return err
-		}
-		resolvedDst, err := resolveAllowMissing(cleanedDst)
-		if err != nil {
-			return err
-		}
-		inside, err := pathWithin(resolvedSrc, resolvedDst)
+		inside, err := destinationInsideSource(cleanedSrc, cleanedDst)
 		if err != nil {
 			return err
 		}
@@ -307,6 +312,22 @@ func copyDir(src, dst string) error {
 	return syncDir(dstParent)
 }
 
+// destinationInsideSource reports whether dst lands inside the src directory
+// tree, following symlinks on both sides. This has to be checked before the
+// operation runs: rename(2) reports it as EINVAL, which is indistinguishable
+// from "this filesystem does not support RENAME_NOREPLACE".
+func destinationInsideSource(src, dst string) (bool, error) {
+	resolvedSrc, err := filepath.EvalSymlinks(filepath.Clean(src))
+	if err != nil {
+		return false, err
+	}
+	resolvedDst, err := resolveAllowMissing(filepath.Clean(dst))
+	if err != nil {
+		return false, err
+	}
+	return pathWithin(resolvedSrc, resolvedDst)
+}
+
 func requireDirectory(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -321,7 +342,7 @@ func requireDirectory(path string) error {
 func renameNoReplace(src, dst string) error {
 	err := unix.Renameat2(unix.AT_FDCWD, src, unix.AT_FDCWD, dst, unix.RENAME_NOREPLACE)
 	if errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EINVAL) {
-		return fmt.Errorf("filesystem does not support atomic no-replace rename: %w", err)
+		return fmt.Errorf("rename %s -> %s: filesystem does not support atomic no-replace rename: %w", src, dst, err)
 	}
 	return err
 }

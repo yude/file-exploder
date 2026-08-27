@@ -3,6 +3,7 @@ package executor
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yude/file-exploder/server/internal/queue"
@@ -183,5 +184,49 @@ func TestExecuteChmodRejectsSymlink(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0600 {
 		t.Fatalf("target mode changed to %o", info.Mode().Perm())
+	}
+}
+
+func TestExecuteRenameRejectsDirectoryIntoItself(t *testing.T) {
+	e := NewExecutor(nil)
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "source")
+	if err := os.Mkdir(src, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := e.Execute(&queue.Job{
+		Type:    queue.JobMove,
+		SrcPath: src,
+		DstPath: filepath.Join(src, "nested"),
+	})
+	if err == nil {
+		t.Fatal("moving a directory into itself unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "into itself") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(src); statErr != nil {
+		t.Fatalf("source directory disturbed: %v", statErr)
+	}
+}
+
+func TestExecuteRenameOnSamePathIsANoOp(t *testing.T) {
+	e := NewExecutor(nil)
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "source")
+	if err := os.WriteFile(src, []byte("content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := e.Execute(&queue.Job{Type: queue.JobRename, SrcPath: src, DstPath: src + "/../source"}); err != nil {
+		t.Fatalf("no-op rename failed: %v", err)
+	}
+	if err := e.Execute(&queue.Job{
+		Type:    queue.JobRename,
+		SrcPath: filepath.Join(tmpDir, "missing"),
+		DstPath: filepath.Join(tmpDir, "missing"),
+	}); err == nil {
+		t.Fatal("no-op rename of a missing source unexpectedly succeeded")
 	}
 }
