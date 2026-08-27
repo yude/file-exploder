@@ -1,6 +1,13 @@
 [Unit]
 Description=FileExploder - Remote File Operation Queue Manager (root)
 After=network.target
+# Without a limit the unit restarts every RestartSec forever: the default burst
+# is 5 starts within 10s, which one start per 5s never reaches, so a daemon that
+# cannot start at all (a corrupt queue.db, say) loops silently and `systemctl
+# status` never shows it as failed. Give up after five tries in five minutes so
+# the failure is visible.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -10,6 +17,19 @@ Environment=HOME=/root
 ExecStart=/usr/local/bin/file-exploder daemon
 Restart=on-failure
 RestartSec=5
+# The daemon finishes the job it is running before it exits, so a stop can
+# legitimately take as long as that job. systemd's default stop timeout is 90s,
+# which SIGKILLs a copy of any size - including on every `install.sh` upgrade,
+# which stops the service first. Allow a longer wait; a job still running after
+# it is killed, failed on the next start, and its staging reclaimed there, so
+# no half-written destination is left behind either way.
+TimeoutStopSec=5min
+# The one supported place to set FILE_EXPLODER_DATA_DIR. It has to reach both
+# this service and the SSH session that runs the CLI, and neither reads the
+# shell's startup files. Setting it in only one of the two puts the daemon and
+# the CLI on different queues, where every operation is accepted and none ever
+# runs.
+EnvironmentFile=-/root/.config/file-exploder/env
 # No UMask here on purpose. The queue directory, log and lock file all set
 # their own modes explicitly, while directories the daemon creates should
 # retain the system's default permissions.
