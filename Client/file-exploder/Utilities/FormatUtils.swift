@@ -17,12 +17,6 @@ struct FormatUtils {
     static func formattedDate(_ date: Date) -> String {
         dateFormatter.string(from: date)
     }
-    
-    static func relativeDate(_ date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: Date())
-    }
 }
 
 struct FileIcons {
@@ -76,35 +70,6 @@ struct FileIcons {
             return "link"
         default:
             return "doc"
-        }
-    }
-    
-    static func color(for file: RemoteFile) -> String {
-        if file.isDirectory {
-            return "folderAccent"
-        }
-        
-        let ext = (file.name as NSString).pathExtension.lowercased()
-        
-        switch ext {
-        case "jpg", "jpeg", "png", "gif", "svg", "webp":
-            return "purple"
-        case "pdf":
-            return "red"
-        case "mp3", "wav", "aac", "flac":
-            return "pink"
-        case "mp4", "mov", "avi", "mkv":
-            return "blue"
-        case "zip", "tar", "gz":
-            return "brown"
-        case "py", "rb":
-            return "green"
-        case "js", "ts":
-            return "yellow"
-        case "swift":
-            return "orange"
-        default:
-            return "gray"
         }
     }
 }

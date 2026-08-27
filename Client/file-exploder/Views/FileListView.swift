@@ -77,7 +77,7 @@ struct FileListView: View {
                 Table(filteredFiles.sorted(using: sortOrder), selection: $selectedFiles, sortOrder: $sortOrder) {
                     TableColumn("名前", value: \.name) { file in
                         HStack(spacing: 8) {
-                            Image(systemName: file.isDirectory ? "folder.fill" : fileIcon(for: file))
+                            Image(systemName: FileIcons.icon(for: file))
                                 .foregroundColor(file.isDirectory ? .accentColor : .secondary)
                             
                             Text(file.name)
@@ -305,32 +305,6 @@ struct FileListView: View {
     private func actionFiles(selection: Set<String>, fallback file: RemoteFile) -> [RemoteFile] {
         let selected = filteredFiles.filter { selection.contains($0.id) }
         return selected.isEmpty ? [file] : selected
-    }
-    
-    private func fileIcon(for file: RemoteFile) -> String {
-        let ext = (file.name as NSString).pathExtension.lowercased()
-        switch ext {
-        case "jpg", "jpeg", "png", "gif", "svg", "webp":
-            return "photo"
-        case "pdf":
-            return "doc.richtext"
-        case "zip", "tar", "gz", "7z", "rar":
-            return "archivebox"
-        case "mp3", "wav", "aac", "flac":
-            return "music.note"
-        case "mp4", "mov", "avi", "mkv":
-            return "film"
-        case "txt", "md", "log":
-            return "doc.text"
-        case "json", "xml", "plist":
-            return "doc.plaintext"
-        case "sh", "bash", "zsh":
-            return "terminal"
-        case "py", "rb", "js", "ts", "swift":
-            return "chevron.left.forwardslash.chevron.right"
-        default:
-            return "doc"
-        }
     }
 }
 

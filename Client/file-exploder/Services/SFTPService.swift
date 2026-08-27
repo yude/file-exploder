@@ -22,44 +22,6 @@ class SFTPService {
         return list.map(makeRemoteFile)
     }
     
-    /// Get file info
-    func getFileInfo(path: String) async throws -> RemoteFile {
-        // Use the new go server stat command
-        let command = "\(commandPrefix) stat -- \(path.shellEscaped)"
-        let output = try await ssh.executeCommand(command)
-        guard let data = output.data(using: .utf8) else {
-            throw QueueError.invalidResponse("Empty response")
-        }
-        let item = try parseJSON(data, type: RemoteFileJSON.self)
-        
-        return makeRemoteFile(item)
-    }
-    
-    /// Create directory
-    func createDirectory(path: String) async throws {
-        _ = try await addToQueue(type: "mkdir", src: nil, dst: path)
-    }
-    
-    /// Delete file or directory
-    func delete(path: String, recursive: Bool = false) async throws {
-        _ = try await addToQueue(type: "delete", src: path, dst: nil)
-    }
-    
-    /// Rename/move
-    func rename(source: String, destination: String) async throws {
-        _ = try await addToQueue(type: "rename", src: source, dst: destination)
-    }
-    
-    /// Copy
-    func copy(source: String, destination: String, recursive: Bool = false) async throws {
-        _ = try await addToQueue(type: "copy", src: source, dst: destination)
-    }
-    
-    /// Change permissions
-    func chmod(path: String, mode: String) async throws {
-        _ = try await addToQueue(type: "chmod", src: nil, dst: path, mode: mode)
-    }
-    
     /// Add operation to server-side queue
     func addToQueue(type: String, src: String?, dst: String?, mode: String? = nil) async throws -> String {
         var command = "\(commandPrefix) add --type \(type)"
@@ -185,14 +147,11 @@ struct RemoteFileJSON: Codable {
 
 enum QueueError: LocalizedError {
     case invalidResponse(String)
-    case jobNotFound
-    
+
     var errorDescription: String? {
         switch self {
         case .invalidResponse(let msg):
             return msg
-        case .jobNotFound:
-            return "Job not found"
         }
     }
 }

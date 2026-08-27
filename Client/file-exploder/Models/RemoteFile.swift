@@ -49,13 +49,6 @@ struct FilePermissions: Hashable {
     let otherWrite: Bool
     let otherExecute: Bool
     
-    var octalString: String {
-        let owner = (ownerRead ? 4 : 0) + (ownerWrite ? 2 : 0) + (ownerExecute ? 1 : 0)
-        let group = (groupRead ? 4 : 0) + (groupWrite ? 2 : 0) + (groupExecute ? 1 : 0)
-        let other = (otherRead ? 4 : 0) + (otherWrite ? 2 : 0) + (otherExecute ? 1 : 0)
-        return "\(owner)\(group)\(other)"
-    }
-    
     func symbolicString(isDirectory: Bool, isSymlink: Bool) -> String {
         var str: String
         if isSymlink {

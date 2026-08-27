@@ -16,7 +16,7 @@ struct Server: Identifiable, Codable, Hashable {
     
     static let defaultPort: UInt16 = 22
     
-    init(name: String, hostname: String, port: UInt16 = 22, username: String, authType: AuthType = .sshKey, keyPath: String? = nil, remoteRoot: String = "/") {
+    init(name: String, hostname: String, port: UInt16 = Server.defaultPort, username: String, authType: AuthType = .sshKey, keyPath: String? = nil, remoteRoot: String = "/") {
         self.name = name
         self.hostname = hostname
         self.port = port
