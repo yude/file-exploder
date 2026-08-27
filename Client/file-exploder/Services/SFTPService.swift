@@ -21,7 +21,7 @@ class SFTPService {
             legacyCommand: legacyCommand,
             unsupportedFlags: ["--path-base64"]
         )
-        guard let data = output.data(using: .utf8) else {
+        guard let data = jsonPayload(of: output) else {
             throw QueueError.invalidResponse("Empty response")
         }
         let list = try parseJSON(data, type: [RemoteFileJSON].self)
@@ -51,7 +51,7 @@ class SFTPService {
             unsupportedFlags: ["--src-base64", "--dst-base64"]
         )
         // Parse JSON response {"id":"xxx","status":"pending"}
-        guard let data = output.data(using: .utf8),
+        guard let data = jsonPayload(of: output),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let id = json["id"] as? String else {
             throw QueueError.invalidResponse("不正なジョブ登録レスポンス: \(output.truncatedForDisplay)")
@@ -62,7 +62,7 @@ class SFTPService {
     /// Get queue status
     func getQueueStatus() async throws -> [QueueJob] {
         let output = try await ssh.executeCommand("\(commandPrefix) status")
-        guard let data = output.data(using: .utf8) else {
+        guard let data = jsonPayload(of: output) else {
             throw QueueError.invalidResponse("Empty response")
         }
         let response = try parseJSON(data, type: QueueResponse.self)
@@ -72,7 +72,7 @@ class SFTPService {
     /// Get recent job logs
     func getJobLogs(limit: Int = 50) async throws -> [QueueJob] {
         let output = try await ssh.executeCommand("\(commandPrefix) log --limit \(limit)")
-        guard let data = output.data(using: .utf8) else {
+        guard let data = jsonPayload(of: output) else {
             throw QueueError.invalidResponse("Empty response")
         }
         return try parseJSON(data, type: [QueueJob].self)
@@ -81,7 +81,7 @@ class SFTPService {
     /// Get specific job status
     func getJobStatus(id: String) async throws -> QueueJob {
         let output = try await ssh.executeCommand("\(commandPrefix) status -- \(id.shellEscaped)")
-        guard let data = output.data(using: .utf8) else {
+        guard let data = jsonPayload(of: output) else {
             throw QueueError.invalidResponse("Empty response")
         }
         return try parseJSON(data, type: QueueJob.self)
@@ -215,6 +215,25 @@ class SFTPService {
         )
     }
     
+    /// The JSON a server command produced, picked out of whatever else came
+    /// back on stdout.
+    ///
+    /// Every command writes exactly one JSON document on exactly one line —
+    /// encoding/json's Encoder emits compact output followed by a newline — but
+    /// it shares stdout with the login shell that ran it. A banner, a fortune,
+    /// an `echo` in a profile above the non-interactive guard: any of it arrives
+    /// first and used to make every single command fail to parse, with nothing
+    /// in the app working until the server's shell startup was tracked down.
+    /// A literal newline cannot appear inside a JSON string, so the last
+    /// non-empty line is the document.
+    private func jsonPayload(of output: String) -> Data? {
+        let lastLine = output
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .last { !$0.isEmpty }
+        return (lastLine ?? output).data(using: .utf8)
+    }
+
     private func parseJSON<T: Decodable>(_ data: Data, type: T.Type) throws -> T {
         let decoder = JSONDecoder.fileExploderDecoder()
         do {
