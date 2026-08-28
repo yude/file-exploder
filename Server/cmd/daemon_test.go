@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -46,7 +49,7 @@ func TestRunJobWithTimeoutRecordsANormalCompletion(t *testing.T) {
 	q := newTestJobQueue(t)
 	job := addAndStartTestJob(t, q, "quick")
 
-	runJobWithTimeout(q, func(*queue.Job) error { return nil }, job, time.Second, discardLogger)
+	runJobWithTimeout(q, func(*queue.Job) error { return nil }, job, time.Second, discardLogger, newBusyPaths())
 
 	got, err := q.GetJob("quick")
 	if err != nil {
@@ -61,7 +64,7 @@ func TestRunJobWithTimeoutRecordsANormalFailure(t *testing.T) {
 	q := newTestJobQueue(t)
 	job := addAndStartTestJob(t, q, "fails")
 
-	runJobWithTimeout(q, func(*queue.Job) error { return errFakeExecute }, job, time.Second, discardLogger)
+	runJobWithTimeout(q, func(*queue.Job) error { return errFakeExecute }, job, time.Second, discardLogger, newBusyPaths())
 
 	got, err := q.GetJob("fails")
 	if err != nil {
@@ -85,7 +88,7 @@ func TestRunJobWithTimeoutAbandonsAHungJobAndIgnoresItsLateResult(t *testing.T) 
 	}
 
 	start := time.Now()
-	runJobWithTimeout(q, execute, job, 20*time.Millisecond, discardLogger)
+	runJobWithTimeout(q, execute, job, 20*time.Millisecond, discardLogger, newBusyPaths())
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("runJobWithTimeout waited %s for a hung job instead of giving up at its timeout", elapsed)
 	}
@@ -114,6 +117,78 @@ func TestRunJobWithTimeoutAbandonsAHungJobAndIgnoresItsLateResult(t *testing.T) 
 	}
 	if got.Status != queue.StatusFailed || !strings.Contains(got.Error, "timed out") {
 		t.Fatalf("late completion changed the recorded outcome: %#v", got)
+	}
+}
+
+func TestProcessPendingJobsSkipsAJobOverlappingATimedOutJobsPath(t *testing.T) {
+	q := newTestJobQueue(t)
+
+	release := make(chan struct{})
+	hungStarted := make(chan struct{})
+	var mu sync.Mutex
+	var executed []string
+	execute := func(job *queue.Job) error {
+		mu.Lock()
+		executed = append(executed, job.ID)
+		mu.Unlock()
+		if job.ID == "hung" {
+			close(hungStarted)
+			<-release
+		}
+		return nil
+	}
+
+	now := time.Now()
+	if err := q.AddJob(&queue.Job{ID: "hung", Type: queue.JobDelete, SrcPath: "/data/shared", Status: queue.StatusPending, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.AddJob(&queue.Job{ID: "overlaps", Type: queue.JobDelete, SrcPath: "/data/shared/child", Status: queue.StatusPending, CreatedAt: now.Add(time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.AddJob(&queue.Job{ID: "unrelated", Type: queue.JobDelete, SrcPath: "/data/other", Status: queue.StatusPending, CreatedAt: now.Add(2 * time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
+
+	busy := newBusyPaths()
+	ctx := context.Background()
+	processPendingJobs(ctx, q, execute, discardLogger, 20*time.Millisecond, busy)
+
+	select {
+	case <-hungStarted:
+	default:
+		t.Fatal("the hung job's execute was never called")
+	}
+
+	mu.Lock()
+	gotExecuted := append([]string(nil), executed...)
+	mu.Unlock()
+	if !slices.Contains(gotExecuted, "unrelated") {
+		t.Fatalf("executed = %v, want it to include the unrelated job", gotExecuted)
+	}
+	if slices.Contains(gotExecuted, "overlaps") {
+		t.Fatalf("executed = %v, want the job overlapping the still-running hung job's path to have been skipped", gotExecuted)
+	}
+
+	overlapsJob, err := q.GetJob("overlaps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overlapsJob.Status != queue.StatusPending {
+		t.Fatalf("overlapping job status = %q, want it left pending", overlapsJob.Status)
+	}
+
+	// Let the abandoned "hung" goroutine actually finish, releasing its hold
+	// on /data/shared.
+	close(release)
+	time.Sleep(20 * time.Millisecond)
+
+	processPendingJobs(ctx, q, execute, discardLogger, time.Second, busy)
+	overlapsJob, err = q.GetJob("overlaps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overlapsJob.Status != queue.StatusCompleted {
+		t.Fatalf("overlapping job status after the hung job released its path = %q, want completed", overlapsJob.Status)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -79,6 +80,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 
 	exec := executor.NewExecutor(q)
+	busy := newBusyPaths()
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -94,7 +96,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			logger.Println("Shutdown signal received, stopping")
 			return nil
 		case <-ticker.C:
-			processPendingJobs(ctx, q, exec, logger, cfg.JobTimeout)
+			processPendingJobs(ctx, q, exec.Execute, logger, cfg.JobTimeout, busy)
 		}
 	}
 }
@@ -196,7 +198,7 @@ func (w *rotatingLogWriter) Close() error {
 	return err
 }
 
-func processPendingJobs(ctx context.Context, q queue.Queue, exec *executor.Executor, logger *log.Logger, timeout time.Duration) {
+func processPendingJobs(ctx context.Context, q queue.Queue, execute func(*queue.Job) error, logger *log.Logger, timeout time.Duration, busy *busyPaths) {
 	jobs, err := q.GetPendingJobs()
 	if err != nil {
 		logger.Printf("Error fetching pending jobs: %v", err)
@@ -212,6 +214,17 @@ func processPendingJobs(ctx context.Context, q queue.Queue, exec *executor.Execu
 			return
 		}
 
+		// A job a previous tick gave up on for exceeding its time budget may
+		// still be running in the background (see runJobWithTimeout) - the
+		// daemon otherwise never has two jobs touching the filesystem at
+		// once, so starting a new job that overlaps one of those paths would
+		// race with it. Leave it pending; it becomes eligible again as soon
+		// as that goroutine actually finishes.
+		if paths := jobPaths(job); busy.overlaps(paths) {
+			logger.Printf("Job %s touches a path a timed-out job may still be using; leaving it pending", job.ID)
+			continue
+		}
+
 		logger.Printf("Processing job %s (%s): %s -> %s", job.ID, job.Type, job.SrcPath, job.DstPath)
 
 		started, err := q.StartJob(job.ID)
@@ -224,7 +237,7 @@ func processPendingJobs(ctx context.Context, q queue.Queue, exec *executor.Execu
 			continue
 		}
 
-		runJobWithTimeout(q, exec.Execute, job, timeout, logger)
+		runJobWithTimeout(q, execute, job, timeout, logger, busy)
 	}
 }
 
@@ -235,8 +248,10 @@ func processPendingJobs(ctx context.Context, q queue.Queue, exec *executor.Execu
 // timed-out job's goroutine is left to finish in the background rather than
 // leaked forever: if it eventually returns, its outcome is logged but not
 // recorded, since finishRunningJob's own status='running' guard would reject
-// a write to a job this function has already marked terminal.
-func runJobWithTimeout(q queue.Queue, execute func(*queue.Job) error, job *queue.Job, timeout time.Duration, logger *log.Logger) {
+// a write to a job this function has already marked terminal. Its paths are
+// held in busy until it does, so processPendingJobs can avoid starting a new
+// job that would race with it.
+func runJobWithTimeout(q queue.Queue, execute func(*queue.Job) error, job *queue.Job, timeout time.Duration, logger *log.Logger, busy *busyPaths) {
 	done := make(chan error, 1)
 	go func() { done <- execute(job) }()
 
@@ -252,7 +267,9 @@ func runJobWithTimeout(q queue.Queue, execute func(*queue.Job) error, job *queue
 	case <-time.After(timeout):
 		logger.Printf("Job %s exceeded its %s execution budget; marking it failed and moving on, but it may still be running in the background", job.ID, timeout)
 		recordTerminalStatus(q, job.ID, queue.StatusFailed, fmt.Sprintf("timed out after %s", timeout), logger)
+		busy.hold(job.ID, jobPaths(job))
 		go func() {
+			defer busy.release(job.ID)
 			if err := <-done; err != nil {
 				logger.Printf("Job %s (already marked as timed out) eventually failed in the background: %v", job.ID, err)
 			} else {
@@ -260,6 +277,70 @@ func runJobWithTimeout(q queue.Queue, execute func(*queue.Job) error, job *queue
 			}
 		}()
 	}
+}
+
+// busyPaths tracks the src/dst paths of jobs runJobWithTimeout has given up
+// on but whose goroutine is still running in the background. Before that
+// timeout mechanism existed, the daemon's single-worker loop guaranteed only
+// one job's filesystem work was ever in flight; an abandoned goroutine breaks
+// that guarantee on its own, so processPendingJobs consults this to avoid
+// starting a new job that could race with one still running.
+type busyPaths struct {
+	mu    sync.Mutex
+	byJob map[string][]string
+}
+
+func newBusyPaths() *busyPaths {
+	return &busyPaths{byJob: make(map[string][]string)}
+}
+
+func (b *busyPaths) hold(jobID string, paths []string) {
+	if len(paths) == 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.byJob[jobID] = paths
+}
+
+func (b *busyPaths) release(jobID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.byJob, jobID)
+}
+
+// overlaps reports whether any path currently held by an abandoned job is the
+// same as, a filesystem ancestor of, or a descendant of any path in paths.
+func (b *busyPaths) overlaps(paths []string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, held := range b.byJob {
+		for _, h := range held {
+			for _, p := range paths {
+				if pathsOverlap(h, p) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// jobPaths returns the paths a job touches, cleaned so they compare
+// consistently with pathsOverlap (defined in add.go) regardless of how the
+// path was originally spelled.
+func jobPaths(job *queue.Job) []string {
+	var paths []string
+	if job.SrcPath != "" {
+		paths = append(paths, filepath.Clean(job.SrcPath))
+	}
+	if job.DstPath != "" {
+		paths = append(paths, filepath.Clean(job.DstPath))
+	}
+	return paths
 }
 
 // terminalStatusAttempts bounds the retries below.
