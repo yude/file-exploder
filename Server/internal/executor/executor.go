@@ -256,7 +256,17 @@ func copyableMode(mode os.FileMode) os.FileMode {
 	return mode & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
 }
 
+// copyFile copies a single file or symlink and fsyncs its destination
+// directory so the new entry survives a crash. copyDir instead calls
+// copyFileTo directly with syncParent false: it fsyncs each staging directory
+// itself exactly once after every entry has been written into it (see the
+// directories loop in copyDir), rather than paying one fsync per file for a
+// directory entry that copyDir is about to sync anyway.
 func copyFile(src, dst string) error {
+	return copyFileTo(src, dst, true)
+}
+
+func copyFileTo(src, dst string, syncParent bool) error {
 	srcInfo, err := os.Lstat(src)
 	if err != nil {
 		return err
@@ -280,6 +290,9 @@ func copyFile(src, dst string) error {
 				return fmt.Errorf("destination already exists: %s", dst)
 			}
 			return err
+		}
+		if !syncParent {
+			return nil
 		}
 		return syncDir(dstDir)
 	}
@@ -339,6 +352,9 @@ func copyFile(src, dst string) error {
 		}
 		return err
 	}
+	if !syncParent {
+		return nil
+	}
 	return syncDir(dstDir)
 }
 
@@ -351,7 +367,18 @@ func copyDir(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(staging)
+	// Suppressed once mergeStagedDirectory fails partway through: at that
+	// point staging still holds whatever didn't make it into dst before the
+	// error, and deleting it here would discard that with no record of what
+	// was lost and no way to finish the operation. Every other failure path
+	// leaves dst untouched, so staging is just a redundant copy of src and
+	// safe to discard as before.
+	removeStaging := true
+	defer func() {
+		if removeStaging {
+			os.RemoveAll(staging)
+		}
+	}()
 
 	type directoryMetadata struct {
 		path string
@@ -379,7 +406,7 @@ func copyDir(src, dst string) error {
 			directories = append(directories, directoryMetadata{path: dstPath, info: info})
 			return nil
 		}
-		return copyFile(path, dstPath)
+		return copyFileTo(path, dstPath, false)
 	})
 	if err != nil {
 		return err
@@ -392,6 +419,13 @@ func copyDir(src, dst string) error {
 		if err := os.Chtimes(directory.path, directory.info.ModTime(), directory.info.ModTime()); err != nil {
 			return err
 		}
+		// One fsync per directory instead of one per file: every entry that
+		// belongs in it (files and, since this loop runs after the whole walk
+		// completes, subdirectories too) has already been written by this
+		// point, so a single sync here durably covers all of them.
+		if err := syncDir(directory.path); err != nil {
+			return err
+		}
 	}
 	if dstInfo, dstErr := os.Lstat(dst); dstErr == nil && dstInfo.IsDir() {
 		// Recheck after staging: the destination can change during a long copy.
@@ -399,7 +433,14 @@ func copyDir(src, dst string) error {
 			return err
 		}
 		if err := mergeStagedDirectory(staging, dst); err != nil {
-			return err
+			removeStaging = false
+			rescue, rescueErr := rescueUnmergedStaging(staging)
+			if rescueErr != nil {
+				return fmt.Errorf("directory merge failed partway through (%w), and the unmerged remainder at %s could not be moved aside for recovery: %w",
+					err, staging, rescueErr)
+			}
+			return fmt.Errorf("directory merge failed partway through, leaving copied-but-not-yet-merged entries at %s for manual recovery: %w",
+				rescue, err)
 		}
 	} else if dstErr != nil && !errors.Is(dstErr, fs.ErrNotExist) {
 		return dstErr
@@ -488,6 +529,24 @@ func mergeStagedDirectory(staging, dst string) error {
 		return err
 	}
 	return syncDir(dst)
+}
+
+// rescueUnmergedStaging moves a staging directory mergeStagedDirectory only
+// partially drained out of the hidden, dot-prefixed namespace
+// RemoveOrphanedStaging sweeps on daemon startup. Left under its original
+// name, an unrelated later job that fails and gets interrupted at the same
+// destination could have its cleanup silently delete these still-unmerged
+// entries before anyone gets to recover them; stripping the leading dot
+// (MkdirTemp's random suffix already makes the name unique) takes it out of
+// that sweep for good.
+func rescueUnmergedStaging(staging string) (string, error) {
+	dir := filepath.Dir(staging)
+	base := strings.TrimPrefix(filepath.Base(staging), ".")
+	rescued := filepath.Join(dir, "file-exploder-unmerged-"+base)
+	if err := os.Rename(staging, rescued); err != nil {
+		return "", err
+	}
+	return rescued, nil
 }
 
 // publishStagedDirectory normally publishes the completed tree atomically.

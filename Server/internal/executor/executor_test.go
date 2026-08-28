@@ -135,6 +135,87 @@ func TestCopyDirectoryRejectsFileConflictBeforeChangingDestination(t *testing.T)
 	}
 }
 
+func TestMergeStagedDirectoryPreservesUnmergedEntriesOnFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	staging := filepath.Join(tmpDir, ".staging")
+	dst := filepath.Join(tmpDir, "destination")
+	if err := os.Mkdir(staging, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dst, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// "a" merges cleanly before mergeStagedDirectory reaches "z-conflict",
+	// which only starts conflicting with dst here - standing in for a
+	// destination that changed after copyDir's preflight ran but before its
+	// merge did, which is exactly what this function exists to survive.
+	if err := os.WriteFile(filepath.Join(staging, "a"), []byte("staged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "z-conflict"), []byte("staged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "z-conflict"), []byte("already there"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := mergeStagedDirectory(staging, dst)
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(dst, "z-conflict")) {
+		t.Fatalf("mergeStagedDirectory error = %v, want the conflicting path", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dst, "a"))
+	if err != nil || string(data) != "staged" {
+		t.Fatalf("merged entry = %q, %v", data, err)
+	}
+	// The failure must not have deleted staging - that is the caller's call
+	// to make, since it may be the only remaining copy of what's left in it.
+	remaining, err := os.ReadDir(staging)
+	if err != nil {
+		t.Fatalf("staging directory was removed despite a partial merge: %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].Name() != "z-conflict" {
+		t.Fatalf("staging directory after partial merge = %v, want only z-conflict left", remaining)
+	}
+	data, err = os.ReadFile(filepath.Join(dst, "z-conflict"))
+	if err != nil || string(data) != "already there" {
+		t.Fatalf("conflicting destination entry changed: %q, %v", data, err)
+	}
+}
+
+func TestRescueUnmergedStagingMovesOutOfTheOrphanSweepNamespace(t *testing.T) {
+	tmpDir := t.TempDir()
+	staging, err := os.MkdirTemp(tmpDir, stagingPattern("destination"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "leftover"), []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	rescued, err := rescueUnmergedStaging(staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(rescued) != tmpDir {
+		t.Fatalf("rescued path = %q, want a sibling of the original staging dir", rescued)
+	}
+	if strings.HasPrefix(filepath.Base(rescued), ".") {
+		t.Fatalf("rescued name %q is still hidden/matches the staging namespace", filepath.Base(rescued))
+	}
+	prefix, suffix, _ := strings.Cut(stagingPattern("destination"), "*")
+	if isStagingName(filepath.Base(rescued), prefix, suffix) {
+		t.Fatalf("rescued name %q still matches the pattern RemoveOrphanedStaging sweeps - it could be swept away by an unrelated later job", filepath.Base(rescued))
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Fatalf("original staging path still exists after rescue: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(rescued, "leftover"))
+	if err != nil || string(data) != "data" {
+		t.Fatalf("rescued contents = %q, %v", data, err)
+	}
+}
+
 func TestRenameNoReplacePlaceholderMovesFileWithoutOverwriting(t *testing.T) {
 	tmpDir := t.TempDir()
 	src := filepath.Join(tmpDir, "source")
