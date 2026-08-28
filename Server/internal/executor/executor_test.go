@@ -280,6 +280,50 @@ func TestPublishStagedDirectoryWithoutAtomicRename(t *testing.T) {
 	}
 }
 
+func TestPublishStagedDirectoryWithoutAtomicRenamePreservesBothHalvesOnMidLoopFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	staging := filepath.Join(tmpDir, "staging")
+	dst := filepath.Join(tmpDir, "destination")
+	if err := os.Mkdir(staging, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "a-first"), []byte("first"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// os.ReadDir sorts entries, so "a-first" renames into dst before this one
+	// is attempted. Moving a directory to a new parent needs write permission
+	// on the directory itself (to update its own ".." entry) - unlike a
+	// plain file, which needs none of its own - so 0000 makes only this
+	// entry's rename fail.
+	blocked := filepath.Join(staging, "b-second")
+	if err := os.Mkdir(blocked, 0000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0700) })
+
+	if err := publishStagedDirectoryWithoutAtomicRename(staging, dst); err == nil {
+		t.Fatal("expected a mid-loop rename failure")
+	}
+
+	// The entry that already made it across must survive, and dst - which
+	// now holds a genuine partial result - must not have been discarded to
+	// get rid of it.
+	data, err := os.ReadFile(filepath.Join(dst, "a-first"))
+	if err != nil || string(data) != "first" {
+		t.Fatalf("already-published entry lost: %q, %v", data, err)
+	}
+
+	// The entry that never made it across must survive too, rescued out of
+	// staging's original (about-to-be-swept) name.
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Fatalf("original staging path still exists: %v", err)
+	}
+	rescued := filepath.Join(tmpDir, "file-exploder-unmerged-staging")
+	if _, err := os.Stat(filepath.Join(rescued, "b-second")); err != nil {
+		t.Fatalf("unpublished entry was not rescued: %v", err)
+	}
+}
+
 func TestCopyDirectoryIsStagedAndPreservesSymlink(t *testing.T) {
 	tmpDir := t.TempDir()
 	src := filepath.Join(tmpDir, "source")

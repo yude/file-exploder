@@ -576,8 +576,12 @@ func publishStagedDirectoryWithoutAtomicRename(staging, dst string) error {
 		return err
 	}
 	complete := false
+	// Set once any entry has been moved out of staging into dst. Until then,
+	// a failure means dst is still empty and safe to discard; once it isn't,
+	// discarding it would destroy a genuine partial result.
+	migrated := false
 	defer func() {
-		if !complete {
+		if !complete && !migrated {
 			removeClaimedDirectory(dst, claimedInfo)
 		}
 	}()
@@ -588,8 +592,22 @@ func publishStagedDirectoryWithoutAtomicRename(staging, dst string) error {
 	}
 	for _, entry := range entries {
 		if err := os.Rename(filepath.Join(staging, entry.Name()), filepath.Join(dst, entry.Name())); err != nil {
-			return err
+			if !migrated {
+				return err
+			}
+			// Some entries already left staging for dst before this one
+			// failed: dst now holds a genuine partial result and must not be
+			// discarded (the defer above leaves it alone once migrated is
+			// true), and staging still holds whatever never made it across.
+			// Rescue that remainder the same way a partially merged
+			// directory already is, instead of losing one half or the other.
+			if rescued, rescueErr := rescueUnmergedStaging(staging); rescueErr == nil {
+				return fmt.Errorf("publishing %s failed partway through: %w (already-published entries are at %s; the rest was rescued to %s)",
+					dst, err, dst, rescued)
+			}
+			return fmt.Errorf("publishing %s failed partway through (%w), and the unpublished remainder at %s could not be rescued", dst, err, staging)
 		}
+		migrated = true
 	}
 	// copyableMode, not Perm(): copyDir has already put the source's setuid,
 	// setgid and sticky bits on the staging directory, and masking to 0777 here
@@ -598,6 +616,13 @@ func publishStagedDirectoryWithoutAtomicRename(staging, dst string) error {
 		return err
 	}
 	if err := os.Chtimes(dst, stagingInfo.ModTime(), stagingInfo.ModTime()); err != nil {
+		return err
+	}
+	// Without this, a crash right after this function reports success could
+	// lose the entries it just moved into dst: only dstParent gets synced
+	// back in copyDir, which records that dst's own directory entry exists,
+	// not that dst's newly-moved-in contents are durable.
+	if err := syncDir(dst); err != nil {
 		return err
 	}
 	if err := os.Remove(staging); err != nil {
@@ -767,6 +792,16 @@ func renameNoReplaceWithPlaceholder(src, dst string) error {
 		err = closeErr
 	}
 	if err != nil {
+		if placeholderInfo == nil {
+			// Stat on the fd we just created failed, so there is nothing to
+			// compare dst against before removing it - but O_EXCL means this
+			// call is the only thing that could just have created it.
+			// removePlaceholder's SameFile guard can never fire with a nil
+			// placeholderInfo, which left this mode-0000 file at dst
+			// forever; remove it directly instead.
+			_ = os.Remove(dst)
+			return err
+		}
 		removePlaceholder(dst, placeholderInfo)
 		return err
 	}
