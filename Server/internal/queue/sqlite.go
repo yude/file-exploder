@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -69,11 +70,35 @@ func migrate(db *sql.DB) error {
 		completed_at DATETIME
 	);
 	CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+	CREATE INDEX IF NOT EXISTS idx_jobs_terminal ON jobs(status, completed_at DESC, created_at DESC);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
-	return normalizeTimestamps(db)
+
+	// normalizeTimestamps used to run unconditionally here, which meant every
+	// CLI invocation and daemon start scanned the entire, never-pruned jobs
+	// table looking for rows to fix - most of which, after the first run, have
+	// nothing to fix. user_version records that the scan has already found and
+	// converted every stale row, so later opens skip straight past it.
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return err
+	}
+	if version >= 1 {
+		return nil
+	}
+	converged, err := normalizeTimestamps(db)
+	if err != nil {
+		return err
+	}
+	if !converged {
+		// A row changed under us mid-migration (see normalizeTimestamps); leave
+		// the version at 0 so the next open tries again for whatever is left.
+		return nil
+	}
+	_, err = db.Exec(`PRAGMA user_version = 1`)
+	return err
 }
 
 // normalizeTimestamps rewrites timestamps that were stored with a local UTC
@@ -83,51 +108,116 @@ func migrate(db *sql.DB) error {
 // administrator changing the server's timezone, would otherwise shuffle the job
 // history. Rows already in UTC are left alone, which makes this a no-op after
 // the first run.
-func normalizeTimestamps(db *sql.DB) error {
-	type record struct {
-		id          string
-		createdAt   time.Time
-		startedAt   sql.NullTime
-		completedAt sql.NullTime
-	}
-
-	rows, err := db.Query(`SELECT id, created_at, started_at, completed_at FROM jobs
-		WHERE created_at NOT LIKE '%+00:00'
-		   OR (started_at IS NOT NULL AND started_at NOT LIKE '%+00:00')
-		   OR (completed_at IS NOT NULL AND completed_at NOT LIKE '%+00:00')`)
+//
+// The reported bool is false if some row's UPDATE didn't apply - a concurrent
+// StartJob/UpdateStatus changed started_at/completed_at between the SELECT
+// above and this row's turn in the loop - in which case the caller must not
+// mark migration as done, or that row would never be revisited.
+func normalizeTimestamps(db *sql.DB) (bool, error) {
+	stale, err := staleTimestampRows(db)
 	if err != nil {
-		return err
-	}
-	var stale []record
-	for rows.Next() {
-		var r record
-		if err := rows.Scan(&r.id, &r.createdAt, &r.startedAt, &r.completedAt); err != nil {
-			return errors.Join(err, rows.Close())
-		}
-		stale = append(stale, r)
-	}
-	if err := rows.Err(); err != nil {
-		return errors.Join(err, rows.Close())
-	}
-	if err := rows.Close(); err != nil {
-		return err
+		return false, err
 	}
 	if len(stale) == 0 {
-		return nil
+		return true, nil
 	}
 
 	tx, err := db.Begin()
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback()
+	converged, err := applyNormalizedTimestamps(tx, stale)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return converged, nil
+}
+
+type staleTimestamp struct {
+	id          string
+	createdAt   time.Time
+	startedAt   sql.NullTime
+	completedAt sql.NullTime
+	// raw* hold the exact text currently in the column, alongside the
+	// driver-parsed values above. The parsed time.Time round-trips through the
+	// driver's own formatting when written back, which does not necessarily
+	// reproduce an arbitrary legacy string byte-for-byte - a pre-migration row
+	// is exactly such an arbitrary string, written by whatever earlier version
+	// of this program (or something else entirely) put it there. Only the raw
+	// text is safe to compare against the row's current contents to detect a
+	// concurrent write.
+	rawStartedAt, rawCompletedAt sql.NullString
+}
+
+func staleTimestampRows(db *sql.DB) ([]staleTimestamp, error) {
+	rows, err := db.Query(`SELECT id, created_at, started_at, completed_at,
+			CAST(started_at AS TEXT), CAST(completed_at AS TEXT)
+		FROM jobs
+		WHERE created_at NOT LIKE '%+00:00'
+		   OR (started_at IS NOT NULL AND started_at NOT LIKE '%+00:00')
+		   OR (completed_at IS NOT NULL AND completed_at NOT LIKE '%+00:00')`)
+	if err != nil {
+		return nil, err
+	}
+	var stale []staleTimestamp
+	for rows.Next() {
+		var r staleTimestamp
+		if err := rows.Scan(&r.id, &r.createdAt, &r.startedAt, &r.completedAt,
+			&r.rawStartedAt, &r.rawCompletedAt); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		stale = append(stale, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.Join(err, rows.Close())
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return stale, nil
+}
+
+// applyNormalizedTimestamps writes stale's rows back with UTC timestamps. The
+// reported bool is false if some row's UPDATE didn't apply - a concurrent
+// StartJob/UpdateStatus changed started_at/completed_at between the read that
+// produced stale and this call - in which case the caller must not mark
+// migration as done, or that row would never be revisited.
+func applyNormalizedTimestamps(tx *sql.Tx, stale []staleTimestamp) (bool, error) {
+	converged := true
 	for _, r := range stale {
-		if _, err := tx.Exec(`UPDATE jobs SET created_at=?, started_at=?, completed_at=? WHERE id=?`,
-			r.createdAt.UTC(), utcOrNull(r.startedAt), utcOrNull(r.completedAt), r.id); err != nil {
-			return err
+		// Guarding on the exact started_at/completed_at text just read makes
+		// this a compare-and-swap: if StartJob or UpdateStatus wrote a new
+		// value for this row in between, the WHERE no longer matches and the
+		// UPDATE becomes a no-op instead of clobbering that concurrent write
+		// back to its stale, pre-migration value.
+		result, err := tx.Exec(
+			`UPDATE jobs SET created_at=?, started_at=?, completed_at=?
+			 WHERE id=? AND CAST(started_at AS TEXT) IS ? AND CAST(completed_at AS TEXT) IS ?`,
+			r.createdAt.UTC(), utcOrNull(r.startedAt), utcOrNull(r.completedAt),
+			r.id, nullStringAny(r.rawStartedAt), nullStringAny(r.rawCompletedAt))
+		if err != nil {
+			return false, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return false, err
+		}
+		if affected == 0 {
+			converged = false
 		}
 	}
-	return tx.Commit()
+	return converged, nil
+}
+
+func nullStringAny(value sql.NullString) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.String
 }
 
 func utcOrNull(value sql.NullTime) any {
@@ -308,6 +398,8 @@ func (q *SQLiteQueue) CancelJob(id string) error {
 	return fmt.Errorf("job %s not found or is already running/finished (running jobs cannot be interrupted)", id)
 }
 
+var terminalStatuses = []JobStatus{StatusCompleted, StatusFailed, StatusCancelled}
+
 func (q *SQLiteQueue) GetRecentLogs(limit int) ([]*Job, error) {
 	if limit <= 0 {
 		limit = 50
@@ -315,9 +407,49 @@ func (q *SQLiteQueue) GetRecentLogs(limit int) ([]*Job, error) {
 	if limit > 1000 {
 		limit = 1000
 	}
-	return q.queryJobs(`SELECT `+jobColumns+`
-		FROM jobs WHERE status IN ('completed', 'failed', 'cancelled')
-		ORDER BY completed_at DESC, created_at DESC LIMIT ?`, limit)
+
+	// idx_jobs_terminal covers (status, completed_at DESC, created_at DESC), so
+	// a plain `status = ?` query satisfies this ORDER BY straight from the
+	// index. Querying `status IN (...)` instead - the obvious one-query
+	// version - makes SQLite fall back to "USE TEMP B-TREE FOR ORDER BY" even
+	// with that same index in place, sorting the entire terminal-job history on
+	// every call. Querying each status separately (already sorted and capped by
+	// the index) and merging the at-most-3*limit rows here keeps the work
+	// bounded by limit instead of by total history size.
+	merged := make([]*Job, 0)
+	for _, status := range terminalStatuses {
+		jobs, err := q.queryJobs(`SELECT `+jobColumns+`
+			FROM jobs WHERE status = ?
+			ORDER BY completed_at DESC, created_at DESC LIMIT ?`, status, limit)
+		if err != nil {
+			return nil, err
+		}
+		merged = append(merged, jobs...)
+	}
+	sort.Slice(merged, func(i, j int) bool { return jobMoreRecent(merged[i], merged[j]) })
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
+}
+
+// jobMoreRecent reports whether a sorts before b under the same
+// "completed_at DESC, created_at DESC" order GetRecentLogs' per-status queries
+// use, treating a NULL completed_at (not expected for a terminal job, but not
+// guaranteed by the schema) as older than any set value.
+func jobMoreRecent(a, b *Job) bool {
+	switch {
+	case a.CompletedAt == nil && b.CompletedAt == nil:
+		return a.CreatedAt.After(b.CreatedAt)
+	case a.CompletedAt == nil:
+		return false
+	case b.CompletedAt == nil:
+		return true
+	case !a.CompletedAt.Equal(*b.CompletedAt):
+		return a.CompletedAt.After(*b.CompletedAt)
+	default:
+		return a.CreatedAt.After(b.CreatedAt)
+	}
 }
 
 func (q *SQLiteQueue) queryJobs(query string, args ...interface{}) ([]*Job, error) {

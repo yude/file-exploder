@@ -255,6 +255,14 @@ func TestMigrationRewritesLocalTimestampsAsUTC(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The migration only rescans the table once per database (see migrate's
+	// user_version gate) - the first, empty open above already advanced it to
+	// 1. Resetting it back to 0 simulates what these on-disk rows are meant to
+	// represent: a database a pre-migration binary left behind, which a real
+	// upgrade would find at 0 already.
+	if _, err := q.db.Exec(`PRAGMA user_version = 0`); err != nil {
+		t.Fatal(err)
+	}
 	if err := q.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -367,5 +375,90 @@ func TestResetRunningJobsSurvivesAConcurrentWriter(t *testing.T) {
 		if len(interrupted) != 1 || interrupted[0].ID != id {
 			t.Fatalf("attempt %d: swept %#v", attempt, interrupted)
 		}
+	}
+}
+
+func TestMigrationOnlyScansOnce(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	q, err := NewSQLiteQueue(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = q.Close() })
+
+	var version int
+	if err := q.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 1 {
+		t.Fatalf("user_version = %d after first open, want 1 (migration should have converged on an empty database)", version)
+	}
+
+	// Insert a stale-looking row directly, bypassing every write path in this
+	// package (all of which write UTC timestamps via time.Time.UTC()). A real
+	// stale row can only come from a genuinely pre-migration database, which
+	// is exactly the state user_version=1 says this one no longer is.
+	if _, err := q.db.Exec(
+		`INSERT INTO jobs (id, type, src_path, status, created_at)
+		 VALUES ('late-arrival', 'delete', '/tmp/x', 'completed', '2026-08-27 01:00:00.5+02:00')`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrate(q.db); err != nil {
+		t.Fatal(err)
+	}
+	createdAt, _ := storedTimestamps(t, q, "late-arrival")
+	if strings.HasSuffix(createdAt, "+00:00") {
+		t.Fatalf("row was rewritten even though user_version already marked migration as converged: %q", createdAt)
+	}
+}
+
+func TestMigrationGuardSkipsARowChangedSinceItWasRead(t *testing.T) {
+	q := newTestQueue(t)
+	// A pending job with a legacy, non-UTC created_at - exactly the shape
+	// normalizeTimestamps' read step looks for. started_at is NULL, as it
+	// would be before the job has started.
+	if _, err := q.db.Exec(
+		`INSERT INTO jobs (id, type, src_path, status, created_at)
+		 VALUES ('job', 'delete', '/tmp/x', 'pending', '2026-08-27 01:00:00.5+02:00')`); err != nil {
+		t.Fatal(err)
+	}
+
+	stale, err := staleTimestampRows(q.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 1 || stale[0].id != "job" {
+		t.Fatalf("staleTimestampRows = %#v", stale)
+	}
+
+	// A concurrent StartJob lands after the read above but before the write
+	// below - exactly the window a real second process (the daemon, while a
+	// CLI invocation's migration pass is mid-flight) could land in.
+	if started, err := q.StartJob("job"); err != nil || !started {
+		t.Fatalf("StartJob() = %v, %v", started, err)
+	}
+
+	tx, err := q.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	converged, err := applyNormalizedTimestamps(tx, stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if converged {
+		t.Fatal("applyNormalizedTimestamps reported convergence despite a concurrent write")
+	}
+
+	job, err := q.GetJob("job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != StatusRunning || job.StartedAt == nil {
+		t.Fatalf("concurrent StartJob was clobbered by the migration: %#v", job)
 	}
 }
