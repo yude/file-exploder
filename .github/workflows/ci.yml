@@ -39,6 +39,31 @@ jobs:
           bash -n Server/install.sh
           bash -n Client/build_mac.sh
 
+      - name: Check systemd units
+        run: |
+          # systemd-analyze reports a bad directive and then exits 0 anyway, so
+          # treat any output as the failure. systemd does the same at runtime -
+          # it logs "Failed to parse ... ignoring" and carries on - which is why
+          # a typo in a unit would otherwise only show up as a service quietly
+          # not restarting.
+          #
+          # Both units name the binary install.sh puts in place; stub it so the
+          # check is about the unit rather than about the build.
+          mkdir -p "$HOME/.local/bin"
+          printf '#!/bin/sh\n' > "$HOME/.local/bin/file-exploder"
+          chmod +x "$HOME/.local/bin/file-exploder"
+          sudo install -m 0755 "$HOME/.local/bin/file-exploder" /usr/local/bin/file-exploder
+          status=0
+          for unit in Server/file-exploder.service Server/file-exploder-system.service; do
+            output="$(systemd-analyze verify "$unit" 2>&1)" || true
+            if [ -n "$output" ]; then
+              echo "$unit:"
+              echo "$output"
+              status=1
+            fi
+          done
+          exit "$status"
+
   client:
     runs-on: macos-14
     defaults:
