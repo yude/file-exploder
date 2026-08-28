@@ -20,7 +20,6 @@ struct FileListView: View {
     
     @State private var showingDeleteConfirmation = false
     @State private var filesToDelete: [RemoteFile] = []
-    @State private var dropTarget: String?
     
     var filteredFiles: [RemoteFile] {
         if searchText.isEmpty {
@@ -127,21 +126,18 @@ struct FileListView: View {
                             Text(file.name)
                                 .lineLimit(1)
                         }
-                        .modifier(rowDragAndDrop(file))
                     }
                     .width(min: 200, ideal: 300)
                     
                     TableColumn("サイズ", value: \.size) { file in
                         Text(file.formattedSize)
                             .foregroundColor(.secondary)
-                            .modifier(rowDragAndDrop(file))
                     }
                     .width(min: 80, ideal: 100)
                     
                     TableColumn("更新日時", value: \.modificationDate) { file in
                         Text(file.formattedDate)
                             .foregroundColor(.secondary)
-                            .modifier(rowDragAndDrop(file))
                     }
                     .width(min: 120, ideal: 150)
                     
@@ -149,7 +145,6 @@ struct FileListView: View {
                         Text(file.symbolicPermissions)
                             .font(.system(.body, design: .monospaced))
                             .foregroundColor(.secondary)
-                            .modifier(rowDragAndDrop(file))
                     }
                     .width(min: 80, ideal: 100)
                 }
@@ -364,14 +359,6 @@ struct FileListView: View {
 
     // MARK: - Drag and drop
 
-    private func rowDragAndDrop(_ file: RemoteFile) -> RowDragAndDrop {
-        RowDragAndDrop(
-            file: file,
-            dropTarget: $dropTarget,
-            onDrop: { dropped, destination in move(dropped, to: destination) }
-        )
-    }
-
     /// Moves the dropped rows into `destination`, and reports whether it took
     /// them - returning false leaves the system showing the drag as rejected.
     private func move(_ dropped: [DraggedRemoteFile], to destination: String) -> Bool {
@@ -406,43 +393,6 @@ struct FileListView: View {
     /// this is authoritative and preserves the on-screen order.
     private func files(in selection: Set<String>) -> [RemoteFile] {
         filteredFiles.filter { selection.contains($0.id) }
-    }
-}
-
-/// Carried by every cell of a row so the whole row is the drag source, and - for
-/// a directory - the whole row is the drop target.
-///
-/// A Table has no row-level hook that also reports when a drag is over it, so
-/// each column carries this instead of the name column alone. Aiming at a
-/// folder should not mean aiming at its name.
-private struct RowDragAndDrop: ViewModifier {
-    let file: RemoteFile
-    @Binding var dropTarget: String?
-    let onDrop: ([DraggedRemoteFile], String) -> Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        let cell = content
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .draggable(DraggedRemoteFile(path: file.path))
-
-        if file.isDirectory {
-            cell
-                .background(dropTarget == file.path ? Color.accentColor.opacity(0.22) : Color.clear)
-                .dropDestination(for: DraggedRemoteFile.self) { dropped, _ in
-                    dropTarget = nil
-                    return onDrop(dropped, file.path)
-                } isTargeted: { targeted in
-                    if targeted {
-                        dropTarget = file.path
-                    } else if dropTarget == file.path {
-                        dropTarget = nil
-                    }
-                }
-        } else {
-            cell
-        }
     }
 }
 
