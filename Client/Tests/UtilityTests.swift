@@ -293,3 +293,39 @@ final class DroppedRowResolutionTests: XCTestCase {
         XCTAssertNotEqual(RemoteFile.identity(for: "/srv/a"), RemoteFile.identity(for: "/srv/b"))
     }
 }
+
+final class ServerAuthTypeTests: XCTestCase {
+    private func decode(_ raw: String) throws -> Server.AuthType {
+        try JSONDecoder().decode(Server.AuthType.self, from: Data("\"\(raw)\"".utf8))
+    }
+
+    /// The stored value must not be the label, or changing the wording would
+    /// make every saved server undecodable.
+    func testStoresAStableValueRatherThanTheLabel() throws {
+        let encoded = try JSONEncoder().encode(Server.AuthType.sshKey)
+        XCTAssertEqual(String(decoding: encoded, as: UTF8.self), "\"sshKey\"")
+        XCTAssertEqual(Server.AuthType.sshKey.displayName, "SSHキー")
+    }
+
+    func testStillReadsListsSavedBeforeTheValueWasSeparated() throws {
+        XCTAssertEqual(try decode("SSHキー"), .sshKey)
+        XCTAssertEqual(try decode("sshKey"), .sshKey)
+    }
+
+    func testRejectsSomethingItDoesNotRecognise() {
+        XCTAssertThrowsError(try decode("password"))
+    }
+
+    func testAWholeSavedServerRoundTrips() throws {
+        let server = Server(
+            name: "srv",
+            hostname: "example.test",
+            port: 2222,
+            username: "user",
+            keyPath: "/home/user/.ssh/id_ed25519",
+            remoteRoot: "/srv"
+        )
+        let restored = try JSONDecoder().decode(Server.self, from: JSONEncoder().encode(server))
+        XCTAssertEqual(restored, server)
+    }
+}

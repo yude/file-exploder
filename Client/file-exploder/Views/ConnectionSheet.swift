@@ -67,7 +67,7 @@ struct ConnectionSheet: View {
                 Section("認証方法") {
                     Picker("認証タイプ", selection: $authType) {
                         ForEach(Server.AuthType.allCases, id: \.self) { type in
-                            Text(type.rawValue).tag(type)
+                            Text(type.displayName).tag(type)
                         }
                     }
                     
