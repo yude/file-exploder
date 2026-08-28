@@ -50,12 +50,21 @@ func (c *Config) EnsureDirs() error {
 	if !filepath.IsAbs(c.DataDir) {
 		return fmt.Errorf("data directory must be an absolute path, got %q: set FILE_EXPLODER_DATA_DIR, or make sure HOME is set", c.DataDir)
 	}
-	info, err := os.Stat(c.DataDir)
+	// Lstat, not Stat: this directory holds the SQLite queue and the daemon
+	// lock, so its permissions matter for real. os.Stat and os.Chmod both
+	// follow a symlink transparently, which would silently force whatever it
+	// points to down to 0700 - unlike every other symlink-aware check in this
+	// codebase (executor.go's executeChmod, for one, explicitly Lstats and
+	// refuses rather than following the link).
+	info, err := os.Lstat(c.DataDir)
 	if os.IsNotExist(err) {
 		return os.MkdirAll(c.DataDir, 0700)
 	}
 	if err != nil {
 		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("data directory %s is a symlink; point FILE_EXPLODER_DATA_DIR at the real directory instead of a link to it", c.DataDir)
 	}
 	if !info.IsDir() {
 		return &os.PathError{Op: "mkdir", Path: c.DataDir, Err: os.ErrExist}
