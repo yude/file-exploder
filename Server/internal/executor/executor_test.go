@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"unicode/utf8"
 
@@ -58,6 +59,28 @@ func TestCopyFileDoesNotOverwrite(t *testing.T) {
 	}
 	if string(data) != "keep" {
 		t.Fatalf("destination changed: %q", data)
+	}
+}
+
+func TestCopyDirectoryRejectsExistingDestinationBeforeWalkingSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "source")
+	dst := filepath.Join(tmpDir, "destination")
+	if err := os.Mkdir(src, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// This unsupported entry would fail during the walk. Seeing the destination
+	// collision instead proves the executor did not start an expensive copy.
+	if err := syscall.Mkfifo(filepath.Join(src, "named-pipe"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dst, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := copyPath(src, dst)
+	if err == nil || !strings.Contains(err.Error(), "destination already exists") {
+		t.Fatalf("copy error = %v, want existing destination", err)
 	}
 }
 

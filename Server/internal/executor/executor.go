@@ -203,6 +203,15 @@ func copyPath(src, dst string) error {
 	if cleanedSrc == cleanedDst {
 		return fmt.Errorf("source and destination are the same path")
 	}
+	// Publishing still performs an atomic/no-replace check, but detect an
+	// already occupied destination before spending minutes copying a large tree
+	// into staging. Lstat is intentional: a dangling symlink also occupies the
+	// destination name and must not be followed or overwritten.
+	if _, err := os.Lstat(cleanedDst); err == nil {
+		return fmt.Errorf("destination already exists: %s", cleanedDst)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
 	info, err := os.Lstat(src)
 	if err != nil {
 		return err
