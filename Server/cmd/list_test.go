@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestNewFileInfoDescribesSymlinks(t *testing.T) {
@@ -86,5 +87,35 @@ func TestListDirectoryRejectsATargetThatIsNotUTF8(t *testing.T) {
 
 	if _, err := listDirectory(target); err == nil {
 		t.Fatal("listing an unrepresentable directory unexpectedly succeeded")
+	}
+}
+
+func TestStatWithTimeoutReturnsAPromptResult(t *testing.T) {
+	tmpDir := t.TempDir()
+	info, ok := statWithTimeoutUsing(os.Stat, tmpDir, time.Second)
+	if !ok || !info.IsDir() {
+		t.Fatalf("statWithTimeoutUsing(%q) = %v, %v", tmpDir, info, ok)
+	}
+
+	if _, ok := statWithTimeoutUsing(os.Stat, filepath.Join(tmpDir, "missing"), time.Second); ok {
+		t.Fatal("statWithTimeoutUsing reported success for a path that does not exist")
+	}
+}
+
+func TestStatWithTimeoutGivesUpOnAHungStat(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	hungStat := func(string) (os.FileInfo, error) {
+		<-release
+		return nil, os.ErrDeadlineExceeded
+	}
+
+	start := time.Now()
+	_, ok := statWithTimeoutUsing(hungStat, "/anything", 20*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("statWithTimeoutUsing waited %s instead of giving up at its timeout", elapsed)
+	}
+	if ok {
+		t.Fatal("statWithTimeoutUsing reported success for a stat that never returned")
 	}
 }

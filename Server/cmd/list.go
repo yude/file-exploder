@@ -7,10 +7,15 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 )
+
+// symlinkResolveTimeout bounds how long newFileInfo waits to resolve a
+// symlink's target type.
+const symlinkResolveTimeout = 2 * time.Second
 
 type FileInfo struct {
 	Name             string `json:"name"`
@@ -29,7 +34,7 @@ func newFileInfo(path, name string, info os.FileInfo) FileInfo {
 	isSymlink := info.Mode()&os.ModeSymlink != 0
 	isDir := info.IsDir()
 	if isSymlink {
-		if target, err := os.Stat(path); err == nil {
+		if target, ok := statWithTimeout(path, symlinkResolveTimeout); ok {
 			isDir = target.IsDir()
 		}
 	}
@@ -42,6 +47,36 @@ func newFileInfo(path, name string, info os.FileInfo) FileInfo {
 		IsDirectory:      isDir,
 		IsSymlink:        isSymlink,
 		Permissions:      uint32(info.Mode() & os.ModePerm),
+	}
+}
+
+// statWithTimeout resolves a symlink's target with os.Stat, but gives up
+// after timeout instead of blocking forever - the same way a dangling
+// symlink (target does not exist) already falls back to reporting the link
+// itself. A symlink into a stale "hard" NFS/SMB/FUSE mount blocks the stat(2)
+// syscall in uninterruptible sleep, a state nothing in Go can cancel, so the
+// goroutine started here is abandoned rather than joined if it does not
+// return in time: it can only ever be reclaimed by the mount recovering or
+// this process exiting, but at least this and every other entry stop waiting
+// on it.
+func statWithTimeout(path string, timeout time.Duration) (os.FileInfo, bool) {
+	return statWithTimeoutUsing(os.Stat, path, timeout)
+}
+
+func statWithTimeoutUsing(stat func(string) (os.FileInfo, error), path string, timeout time.Duration) (os.FileInfo, bool) {
+	result := make(chan os.FileInfo, 1)
+	go func() {
+		info, err := stat(path)
+		if err != nil {
+			info = nil
+		}
+		result <- info
+	}()
+	select {
+	case info := <-result:
+		return info, info != nil
+	case <-time.After(timeout):
+		return nil, false
 	}
 }
 
