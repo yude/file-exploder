@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -112,8 +113,35 @@ func runList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	enc := json.NewEncoder(os.Stdout)
-	return enc.Encode(results)
+	return writeJSONArray(os.Stdout, results)
+}
+
+// writeJSONArray writes items as a JSON array one element at a time, instead
+// of building the whole array as a single encoded byte buffer the way
+// json.Encoder.Encode(items) would. ReadDir already requires holding every
+// entry of a directory in memory at once, so this does not change that, but
+// a very large listing no longer also needs its entire JSON encoding held
+// in memory simultaneously alongside it.
+func writeJSONArray(w io.Writer, items []FileInfo) error {
+	if _, err := io.WriteString(w, "["); err != nil {
+		return err
+	}
+	for i, item := range items {
+		if i > 0 {
+			if _, err := io.WriteString(w, ","); err != nil {
+				return err
+			}
+		}
+		data, err := json.Marshal(item)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(data); err != nil {
+			return err
+		}
+	}
+	_, err := io.WriteString(w, "]\n")
+	return err
 }
 
 func listDirectory(target string) ([]FileInfo, error) {

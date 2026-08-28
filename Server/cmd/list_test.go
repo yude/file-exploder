@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -117,5 +119,41 @@ func TestStatWithTimeoutGivesUpOnAHungStat(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("statWithTimeoutUsing reported success for a stat that never returned")
+	}
+}
+
+func TestWriteJSONArrayMatchesEncodingWholeSliceAtOnce(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "a"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "b"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := listDirectory(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		entries []FileInfo
+	}{
+		{"populated", entries},
+		{"empty", []FileInfo{}},
+	} {
+		var streamed bytes.Buffer
+		if err := writeJSONArray(&streamed, tc.entries); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+
+		var wholeSlice bytes.Buffer
+		if err := json.NewEncoder(&wholeSlice).Encode(tc.entries); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+
+		if streamed.String() != wholeSlice.String() {
+			t.Fatalf("%s: writeJSONArray = %q, want byte-identical to Encoder.Encode = %q", tc.name, streamed.String(), wholeSlice.String())
+		}
 	}
 }
