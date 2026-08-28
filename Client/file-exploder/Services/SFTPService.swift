@@ -9,6 +9,15 @@ class SFTPService {
         self.ssh = ssh
     }
     
+    /// A single `list` invocation enumerates and lstats every entry of a
+    /// directory in one unpaginated pass (see Server/cmd/list.go), so it can
+    /// legitimately take much longer than an ordinary control command on a
+    /// very large directory or a slow filesystem. The generic 120s default
+    /// would time it out - permanently, since retrying hits the same
+    /// directory-size-driven slowness every time - so give it its own,
+    /// much larger budget instead of inheriting executeCommand's default.
+    private static let listDirectoryTimeout: TimeInterval = 900
+
     /// List directory contents
     func listDirectory(path: String) async throws -> [RemoteFile] {
         // Keep the path ASCII until it reaches the Go process. Passing a
@@ -19,7 +28,8 @@ class SFTPService {
         let output = try await executeWithLegacyFallback(
             command,
             legacyCommand: legacyCommand,
-            unsupportedFlags: ["--path-base64"]
+            unsupportedFlags: ["--path-base64"],
+            timeout: Self.listDirectoryTimeout
         )
         guard let data = jsonPayload(of: output) else {
             throw QueueError.invalidResponse("Empty response")
@@ -66,16 +76,21 @@ class SFTPService {
             throw QueueError.invalidResponse("Empty response")
         }
         let response = try parseJSON(data, type: QueueResponse.self)
-        return response.jobs ?? []
+        return (response.jobs ?? []).compactMap(\.value)
     }
-    
+
     /// Get recent job logs
+    ///
+    /// Decoded element-by-element (see FailableDecodable) so one job with an
+    /// operation type or status this client doesn't recognize - a newer
+    /// server, or a build skew between client and server - doesn't hide every
+    /// other job in the response.
     func getJobLogs(limit: Int = 50) async throws -> [QueueJob] {
         let output = try await ssh.executeCommand("\(commandPrefix) log --limit \(limit)")
         guard let data = jsonPayload(of: output) else {
             throw QueueError.invalidResponse("Empty response")
         }
-        return try parseJSON(data, type: [QueueJob].self)
+        return try parseJSON(data, type: [FailableDecodable<QueueJob>].self).compactMap(\.value)
     }
     
     /// Get specific job status
@@ -189,17 +204,18 @@ class SFTPService {
     private func executeWithLegacyFallback(
         _ command: String,
         legacyCommand: String,
-        unsupportedFlags: [String]
+        unsupportedFlags: [String],
+        timeout: TimeInterval = 120
     ) async throws -> String {
         do {
-            return try await ssh.executeCommand(command)
+            return try await ssh.executeCommand(command, timeout: timeout)
         } catch {
             let message = error.localizedDescription
             let isUnsupported = unsupportedFlags.contains {
                 message.contains("unknown flag: \($0)")
             }
             guard isUnsupported else { throw error }
-            return try await ssh.executeCommand(legacyCommand)
+            return try await ssh.executeCommand(legacyCommand, timeout: timeout)
         }
     }
 
@@ -257,9 +273,9 @@ private extension String {
 
 // MARK: - Supporting types
 
-struct QueueResponse: Codable {
+struct QueueResponse: Decodable {
     let total: Int
-    let jobs: [QueueJob]?
+    let jobs: [FailableDecodable<QueueJob>]?
 }
 
 struct RemoteFileJSON: Codable {

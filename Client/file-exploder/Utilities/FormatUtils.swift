@@ -10,8 +10,15 @@ struct FormatUtils {
         return formatter
     }()
 
+    /// Reused across every row for the same reason as dateFormatter above.
+    private static let sizeFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
+
     static func formattedSize(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        sizeFormatter.string(fromByteCount: bytes)
     }
 
     static func formattedDate(_ date: Date) -> String {

@@ -15,7 +15,7 @@ enum RemotePath {
         guard path.hasPrefix("/") else { return path }
 
         var components: [String] = []
-        for component in path.split(separator: "/") {
+        for component in splitComponents(path) {
             switch component {
             case ".":
                 continue
@@ -24,17 +24,44 @@ enum RemotePath {
                     components.removeLast()
                 }
             default:
-                components.append(String(component))
+                components.append(component)
             }
         }
         return "/" + components.joined(separator: "/")
     }
 
     static func parent(of path: String) -> String {
-        var components = standardized(path).split(separator: "/").map(String.init)
+        var components = splitComponents(standardized(path))
         guard !components.isEmpty else { return "/" }
         components.removeLast()
         return "/" + components.joined(separator: "/")
+    }
+
+    /// Splits a path into components over unicode scalars, not Characters: a
+    /// separator immediately followed by a combining mark forms a single
+    /// Character that does not compare equal to "/", so Character-based
+    /// `split(separator: "/")` silently swallowed such a separator into
+    /// whichever component preceded it instead of treating it as a boundary
+    /// (see isValidComponent's own note on the same hazard). Empty
+    /// components - leading, trailing or duplicated separators - are
+    /// omitted, matching `split(separator:)`'s default behaviour.
+    private static func splitComponents(_ path: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        for scalar in path.unicodeScalars {
+            if scalar == "/" {
+                if !current.isEmpty {
+                    result.append(current)
+                    current = ""
+                }
+            } else {
+                current.unicodeScalars.append(scalar)
+            }
+        }
+        if !current.isEmpty {
+            result.append(current)
+        }
+        return result
     }
 
     static func appending(_ name: String, to path: String) -> String {

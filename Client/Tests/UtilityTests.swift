@@ -329,3 +329,37 @@ final class ServerAuthTypeTests: XCTestCase {
         XCTAssertEqual(restored, server)
     }
 }
+
+final class FailableDecodableTests: XCTestCase {
+    /// One entry in a saved-server list written by a different app version
+    /// with an authType this one no longer (or does not yet) recognize must
+    /// not blank out every other saved server.
+    func testDropsOnlyTheServerThatDoesNotDecode() throws {
+        let json = """
+        [
+            {"id":"11111111-1111-1111-1111-111111111111","name":"a","hostname":"h","port":22,"username":"u","authType":"sshKey","remoteRoot":"/"},
+            {"id":"22222222-2222-2222-2222-222222222222","name":"b","hostname":"h","port":22,"username":"u","authType":"unknown-method","remoteRoot":"/"}
+        ]
+        """
+        let decoded = try JSONDecoder().decode([FailableDecodable<Server>].self, from: Data(json.utf8))
+        let servers = decoded.compactMap(\.value)
+        XCTAssertEqual(servers.count, 1)
+        XCTAssertEqual(servers.first?.name, "a")
+    }
+
+    /// Likewise, one job with an operation type this client doesn't
+    /// recognize - a newer server, a build skew - must not hide the rest of
+    /// the queue or log response.
+    func testDropsOnlyTheQueueJobThatDoesNotDecode() throws {
+        let json = """
+        [
+            {"id":"1","type":"delete","status":"completed","created_at":"2026-08-27T00:00:00Z"},
+            {"id":"2","type":"beam-up","status":"completed","created_at":"2026-08-27T00:00:00Z"}
+        ]
+        """
+        let decoded = try JSONDecoder.fileExploderDecoder().decode([FailableDecodable<QueueJob>].self, from: Data(json.utf8))
+        let jobs = decoded.compactMap(\.value)
+        XCTAssertEqual(jobs.count, 1)
+        XCTAssertEqual(jobs.first?.id, "1")
+    }
+}

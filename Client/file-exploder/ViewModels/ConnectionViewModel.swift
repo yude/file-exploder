@@ -49,12 +49,18 @@ class ConnectionViewModel: ObservableObject {
     /// Returns the persisted list, or nil when it is present but unreadable -
     /// in which case the caller keeps whatever it already has rather than
     /// treating a decode failure as "the user has no servers".
+    ///
+    /// Decoded element-by-element so one entry an older or newer app version
+    /// wrote in a form this one doesn't recognize - an unknown AuthType raw
+    /// value, say - is dropped instead of failing the whole list and hiding
+    /// every other saved server along with it.
     private func decodeStoredServers() -> [Server]? {
         guard let data = UserDefaults.standard.data(forKey: serversKey) else {
             return []
         }
         do {
-            return try JSONDecoder().decode([Server].self, from: data)
+            let decoded = try JSONDecoder().decode([FailableDecodable<Server>].self, from: data)
+            return decoded.compactMap(\.value)
         } catch {
             print("Failed to decode saved servers: \(error)")
             connectionError = "サーバー設定の読み込みに失敗しました: \(error.localizedDescription)"

@@ -141,7 +141,11 @@ class SSHConnection: ObservableObject, @unchecked Sendable {
 
                     let (data, outputExceeded) = outputData.get()
                     let (errorBytes, errorExceeded) = errorData.get()
-                    if outputExceeded || errorExceeded {
+                    // stderr is only used below, on the failure path, so an
+                    // oversized stderr must not discard stdout - the actual
+                    // payload - on an otherwise-successful command. stdout is
+                    // still held to its own limit unconditionally.
+                    if outputExceeded {
                         continuation.resume(throwing: SSHError.outputTooLarge)
                         return
                     }
@@ -158,6 +162,8 @@ class SSHConnection: ObservableObject, @unchecked Sendable {
                     var message = String(data: errorBytes, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     if message.isEmpty {
                         message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error (Exit code: \(process.terminationStatus))"
+                    } else if errorExceeded {
+                        message += "\n…(truncated)"
                     }
 
                     if message.contains("Permission denied") {
