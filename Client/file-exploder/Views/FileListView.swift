@@ -377,8 +377,12 @@ struct FileListView: View {
     private func move(_ dropped: [DraggedRemoteFile], to destination: String) -> Bool {
         // Resolve against the rows on screen. A drag that started outside the
         // app arrives as text that matches nothing and is declined here.
-        let droppedPaths = Set(dropped.map(\.path))
-        var sources = filteredFiles.filter { droppedPaths.contains($0.path) }
+        //
+        // Matched by identity, not by path: a Set<String> of paths compares its
+        // members canonically, so dragging one of an NFC/NFD pair would pick up
+        // both rows and move a file the user never touched.
+        let droppedIDs = Set(dropped.map { RemoteFile.identity(for: $0.path) })
+        var sources = filteredFiles.filter { droppedIDs.contains($0.id) }
         guard !sources.isEmpty else { return false }
 
         // Dragging one row of a selection takes the whole selection, the way

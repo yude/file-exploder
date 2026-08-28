@@ -41,7 +41,11 @@ struct RemoteFile: Identifiable, Hashable {
 
     private static let hexDigits = Array("0123456789abcdef")
 
-    private static func identity(for path: String) -> String {
+    /// The identity a given path would have. Anything resolving a path back to
+    /// a row has to go through this rather than comparing paths: Swift compares
+    /// Strings canonically, so an NFC and an NFD spelling match each other even
+    /// though the server holds them as two files.
+    static func identity(for path: String) -> String {
         var characters: [Character] = []
         characters.reserveCapacity(path.utf8.count * 2)
         for byte in path.utf8 {

@@ -266,3 +266,30 @@ final class RemotePathMoveTests: XCTestCase {
         XCTAssertTrue(RemotePath.canMove("/srv/docs", into: "/srv/docs-backup"))
     }
 }
+
+final class DroppedRowResolutionTests: XCTestCase {
+    /// A drop carries paths, and paths have to be turned back into rows by
+    /// identity. Matching paths directly would let one dragged row select both
+    /// halves of an NFC/NFD pair, and move a file the user never dragged.
+    func testIdentityDistinguishesCanonicallyEqualPaths() {
+        let composed = "/srv/caf\u{00e9}.txt"
+        let decomposed = "/srv/cafe\u{0301}.txt"
+
+        XCTAssertEqual(composed, decomposed, "the premise: Swift compares these as equal")
+        XCTAssertEqual(Set([composed, decomposed]).count, 1, "so a Set of paths collapses them")
+
+        let ids = Set([composed, decomposed].map(RemoteFile.identity(for:)))
+        XCTAssertEqual(ids.count, 2, "identities must keep them apart")
+        XCTAssertFalse(ids.isEmpty)
+
+        // Dragging one must resolve to exactly one of them.
+        let dragged = Set([RemoteFile.identity(for: composed)])
+        let matched = [composed, decomposed].filter { dragged.contains(RemoteFile.identity(for: $0)) }
+        XCTAssertEqual(matched.count, 1)
+    }
+
+    func testIdentityIsStableForTheSamePath() {
+        XCTAssertEqual(RemoteFile.identity(for: "/srv/a"), RemoteFile.identity(for: "/srv/a"))
+        XCTAssertNotEqual(RemoteFile.identity(for: "/srv/a"), RemoteFile.identity(for: "/srv/b"))
+    }
+}
