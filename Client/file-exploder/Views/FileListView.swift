@@ -117,7 +117,7 @@ struct FileListView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Table(filteredFiles.sorted(using: sortOrder), selection: $selectedFiles, sortOrder: $sortOrder) {
+                Table(of: RemoteFile.self, selection: $selectedFiles, sortOrder: $sortOrder) {
                     TableColumn("名前", value: \.name) { file in
                         HStack(spacing: 8) {
                             Image(systemName: FileIcons.icon(for: file))
@@ -147,6 +147,22 @@ struct FileListView: View {
                             .foregroundColor(.secondary)
                     }
                     .width(min: 80, ideal: 100)
+                } rows: {
+                    // Dragging belongs on the row, not on its cells. Putting it
+                    // on the cells placed a gesture in front of the table's own
+                    // handling and cost selection and double-click entirely.
+                    ForEach(filteredFiles.sorted(using: sortOrder)) { file in
+                        if file.isDirectory {
+                            TableRow(file)
+                                .draggable(DraggedRemoteFile(path: file.path))
+                                .dropDestination(for: DraggedRemoteFile.self) { dropped in
+                                    _ = move(dropped, to: file.path)
+                                }
+                        } else {
+                            TableRow(file)
+                                .draggable(DraggedRemoteFile(path: file.path))
+                        }
+                    }
                 }
                 .contextMenu(forSelectionType: String.self) { selection in
                     let targets = files(in: selection)
