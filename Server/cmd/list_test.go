@@ -157,3 +157,15 @@ func TestWriteJSONArrayMatchesEncodingWholeSliceAtOnce(t *testing.T) {
 		}
 	}
 }
+
+func TestTimeoutForEntryRespectsBothTheSharedBudgetAndThePerEntryCap(t *testing.T) {
+	if got := timeoutForEntry(time.Now().Add(time.Hour)); got != symlinkResolveTimeout {
+		t.Fatalf("timeoutForEntry with a distant deadline = %v, want the per-entry cap %v", got, symlinkResolveTimeout)
+	}
+	if got := timeoutForEntry(time.Now().Add(5 * time.Millisecond)); got <= 0 || got > symlinkResolveTimeout {
+		t.Fatalf("timeoutForEntry with a near deadline = %v, want roughly the remaining budget", got)
+	}
+	if got := timeoutForEntry(time.Now().Add(-time.Second)); got > 0 {
+		t.Fatalf("timeoutForEntry with an already-past deadline = %v, want zero or negative", got)
+	}
+}

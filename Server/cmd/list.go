@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,8 +16,16 @@ import (
 )
 
 // symlinkResolveTimeout bounds how long newFileInfo waits to resolve a
-// symlink's target type.
+// single symlink's target type.
 const symlinkResolveTimeout = 2 * time.Second
+
+// symlinkResolveBudget bounds the *total* time listDirectory spends
+// resolving symlink targets across a whole directory. Without it, a
+// directory containing many symlinks into the same hung mount would each pay
+// up to symlinkResolveTimeout in turn, making the command's latency scale
+// with the symlink count instead of staying capped once no matter how large
+// the directory is.
+const symlinkResolveBudget = 20 * time.Second
 
 type FileInfo struct {
 	Name             string `json:"name"`
@@ -32,10 +41,17 @@ type FileInfo struct {
 // reported as links, but IsDirectory follows the link so the client can descend
 // into symlinked directories; a link whose target is gone stays a plain entry.
 func newFileInfo(path, name string, info os.FileInfo) FileInfo {
+	return newFileInfoWithTimeout(path, name, info, symlinkResolveTimeout)
+}
+
+// newFileInfoWithTimeout is newFileInfo with an explicit symlink-resolution
+// timeout, so listDirectory can spend down a shared total budget across many
+// entries instead of paying the full symlinkResolveTimeout on every one.
+func newFileInfoWithTimeout(path, name string, info os.FileInfo, timeout time.Duration) FileInfo {
 	isSymlink := info.Mode()&os.ModeSymlink != 0
 	isDir := info.IsDir()
 	if isSymlink {
-		if target, ok := statWithTimeout(path, symlinkResolveTimeout); ok {
+		if target, ok := statWithTimeout(path, timeout); ok {
 			isDir = target.IsDir()
 		}
 	}
@@ -113,7 +129,15 @@ func runList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return writeJSONArray(os.Stdout, results)
+	// Buffered so writeJSONArray's per-element writes reach stdout as a small
+	// number of large writes instead of one write(2) syscall per element (and
+	// another per separator) - the streaming encode below is about memory, not
+	// about how many syscalls it costs to hand the bytes to the kernel.
+	w := bufio.NewWriter(os.Stdout)
+	if err := writeJSONArray(w, results); err != nil {
+		return err
+	}
+	return w.Flush()
 }
 
 // writeJSONArray writes items as a JSON array one element at a time, instead
@@ -121,7 +145,8 @@ func runList(cmd *cobra.Command, args []string) error {
 // json.Encoder.Encode(items) would. ReadDir already requires holding every
 // entry of a directory in memory at once, so this does not change that, but
 // a very large listing no longer also needs its entire JSON encoding held
-// in memory simultaneously alongside it.
+// in memory simultaneously alongside it. Callers that care about syscall
+// count (runList does) should wrap w in a buffered writer themselves.
 func writeJSONArray(w io.Writer, items []FileInfo) error {
 	if _, err := io.WriteString(w, "["); err != nil {
 		return err
@@ -144,6 +169,20 @@ func writeJSONArray(w io.Writer, items []FileInfo) error {
 	return err
 }
 
+// timeoutForEntry returns the smaller of symlinkResolveTimeout and however
+// much of the shared per-directory budget (deadline) is left, so a single
+// entry never waits past whichever bound is tighter. Once the budget is
+// exhausted this is zero or negative, which statWithTimeout treats as an
+// immediate timeout - so an entry past the budget still gets listed, just
+// without waiting to resolve its symlink target.
+func timeoutForEntry(deadline time.Time) time.Duration {
+	remaining := time.Until(deadline)
+	if remaining > symlinkResolveTimeout {
+		return symlinkResolveTimeout
+	}
+	return remaining
+}
+
 func listDirectory(target string) ([]FileInfo, error) {
 	// Entry names are checked below, but every path in the response is built by
 	// joining them onto this target - so an unrepresentable target alone is
@@ -158,6 +197,7 @@ func listDirectory(target string) ([]FileInfo, error) {
 		return nil, err
 	}
 
+	deadline := time.Now().Add(symlinkResolveBudget)
 	results := make([]FileInfo, 0, len(entries))
 	for _, entry := range entries {
 		// JSON strings must be valid UTF-8. encoding/json replaces invalid bytes
@@ -177,7 +217,7 @@ func listDirectory(target string) ([]FileInfo, error) {
 			return nil, err
 		}
 
-		results = append(results, newFileInfo(filepath.Join(target, entry.Name()), entry.Name(), info))
+		results = append(results, newFileInfoWithTimeout(filepath.Join(target, entry.Name()), entry.Name(), info, timeoutForEntry(deadline)))
 	}
 
 	return results, nil
