@@ -199,7 +199,7 @@ func guardDataDir(dataDir string, paths ...string) error {
 	// symlink on the way in - a link to the directory, or an operation reaching
 	// it through a linked ancestor - and the guard is worth nothing if the one
 	// path spelling that matters can be spelled another way.
-	resolvedDataDir, err := executor.ResolveAllowMissing(absDataDir)
+	resolvedDataDir, err := resolveAllowMissingWithTimeout(absDataDir, symlinkResolveTimeout)
 	if err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func guardDataDir(dataDir string, paths ...string) error {
 		if path == "" {
 			continue
 		}
-		resolved, err := executor.ResolveAllowMissing(path)
+		resolved, err := resolveAllowMissingWithTimeout(path, symlinkResolveTimeout)
 		if err != nil {
 			return err
 		}
@@ -217,6 +217,36 @@ func guardDataDir(dataDir string, paths ...string) error {
 		}
 	}
 	return nil
+}
+
+// resolveAllowMissingWithTimeout bounds executor.ResolveAllowMissing the same
+// way list.go's statWithTimeout bounds os.Stat: a symlink on the way to
+// dataDir or to an operation's own path can point into a stale "hard"
+// NFS/SMB/FUSE mount, and EvalSymlinks blocks in uninterruptible sleep on
+// such a mount with no way for Go to cancel it. Without this, a single `add`
+// command could hang forever - and unlike list/stat, which only skip
+// resolving one entry's target on timeout, add has no fallback: it just
+// fails the command, the same way any other guardDataDir error already does.
+func resolveAllowMissingWithTimeout(path string, timeout time.Duration) (string, error) {
+	return resolveAllowMissingWithTimeoutUsing(executor.ResolveAllowMissing, path, timeout)
+}
+
+func resolveAllowMissingWithTimeoutUsing(resolve func(string) (string, error), path string, timeout time.Duration) (string, error) {
+	type result struct {
+		path string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		resolved, err := resolve(path)
+		done <- result{resolved, err}
+	}()
+	select {
+	case r := <-done:
+		return r.path, r.err
+	case <-time.After(timeout):
+		return "", fmt.Errorf("timed out resolving symlinks in %s after %s", path, timeout)
+	}
 }
 
 // pathsOverlap reports whether either path is the other, or contains it.

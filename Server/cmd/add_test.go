@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDecodePathFlagPreservesUnicodeNormalization(t *testing.T) {
@@ -112,5 +113,23 @@ func TestGuardDataDirSeesThroughSymlinks(t *testing.T) {
 	}
 	if err := guardDataDir(dataDir, unrelated, filepath.Join(unrelated, "new")); err != nil {
 		t.Errorf("guardDataDir refused an unrelated path: %v", err)
+	}
+}
+
+func TestResolveAllowMissingWithTimeoutGivesUpOnAHungResolve(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	hungResolve := func(string) (string, error) {
+		<-release
+		return "", nil
+	}
+
+	start := time.Now()
+	_, err := resolveAllowMissingWithTimeoutUsing(hungResolve, "/anything", 20*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("resolveAllowMissingWithTimeoutUsing waited %s instead of giving up at its timeout", elapsed)
+	}
+	if err == nil {
+		t.Fatal("resolveAllowMissingWithTimeoutUsing reported success for a resolve that never returned")
 	}
 }
