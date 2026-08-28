@@ -116,7 +116,14 @@ struct QueuePanelView: View {
             }
         }
         .frame(width: 250)
-        .task(id: refreshTaskID) {
+        // Keyed on the connection alone, not the selected tab: this task used
+        // to restart - wiping both tabs' already-loaded jobs and forcing a
+        // fresh fetch - on every switch between "キュー" and "履歴", even
+        // though nothing about the connection changed. refresh() already
+        // reads selectedTab itself on every tick, so the same long-lived loop
+        // keeps whichever tab is on screen up to date without touching the
+        // other tab's data.
+        .task(id: sftp.map { ObjectIdentifier($0) }) {
             // The task restarts when the connection changes, so this is also
             // where the previous session's jobs have to go: leaving them meant
             // the panel kept listing a disconnected server's queue as if it
@@ -141,10 +148,6 @@ struct QueuePanelView: View {
                 }
             }
         }
-    }
-
-    private var refreshTaskID: RefreshTaskID {
-        RefreshTaskID(tab: selectedTab, service: sftp.map { ObjectIdentifier($0) })
     }
 
     private func copyAllLogs() {
@@ -183,11 +186,6 @@ struct QueuePanelView: View {
             errorMessage = error.localizedDescription
         }
     }
-}
-
-private struct RefreshTaskID: Hashable {
-    let tab: Int
-    let service: ObjectIdentifier?
 }
 
 struct QueueJobRow: View {

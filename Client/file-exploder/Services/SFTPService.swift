@@ -187,6 +187,107 @@ class SFTPService {
         throw QueueError.invalidResponse("処理がタイムアウトしました。ジョブ画面で状態を確認してください")
     }
 
+    /// Waits for every job in `ids` to leave the active queue, sharing a
+    /// single getQueueStatus() poll per interval across the whole batch
+    /// instead of paying one getJobStatus() SSH round trip per job per poll -
+    /// which is what a bulk operation (multi-file delete/copy/move/chmod)
+    /// used to do by calling waitForJob(id:) once per file, fully serially.
+    ///
+    /// Once a job leaves the active list it is looked up individually exactly
+    /// once, to learn how it actually finished. Everything else about the
+    /// wait - the stalled-queue detection, the poll-failure tolerance -
+    /// mirrors waitForJob(id:) above, just shared across the batch instead of
+    /// tracked per job.
+    ///
+    /// Returns the ids that did not complete successfully, mapped to an error
+    /// message; an id that isn't a key in the result succeeded.
+    func waitForJobs(ids: [String]) async throws -> [String: String] {
+        guard !ids.isEmpty else { return [:] }
+
+        var remaining = Set(ids)
+        var failures: [String: String] = [:]
+
+        var pollInterval: UInt64 = 300_000_000
+        let maxPollInterval: UInt64 = 3_000_000_000
+        var pendingSince = Date()
+        var everStarted = false
+        var stalledObservations = 0
+        var consecutiveFailures = 0
+
+        while !remaining.isEmpty {
+            try Task.checkCancellation()
+
+            let activeJobs: [QueueJob]
+            do {
+                activeJobs = try await getQueueStatus()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                consecutiveFailures += 1
+                if consecutiveFailures > Self.pollFailuresTolerated {
+                    throw error
+                }
+                try await Task.sleep(nanoseconds: pollInterval)
+                pollInterval = min(pollInterval * 2, maxPollInterval)
+                continue
+            }
+            consecutiveFailures = 0
+
+            let activeByID = Dictionary(uniqueKeysWithValues: activeJobs.map { ($0.id, $0) })
+            let queueIsMoving = activeJobs.contains { $0.status == .running }
+            if remaining.contains(where: { activeByID[$0]?.status == .running }) {
+                everStarted = true
+            }
+
+            // A snapshot, not `remaining` itself: this loop removes ids from
+            // `remaining` as it resolves them, and mutating a Set while
+            // iterating over that same instance is undefined.
+            for id in remaining.filter({ activeByID[$0] == nil }) {
+                remaining.remove(id)
+                do {
+                    let job = try await getJobStatus(id: id)
+                    switch job.status {
+                    case .completed:
+                        break
+                    case .failed:
+                        failures[id] = job.error ?? "Unknown error"
+                    case .cancelled:
+                        failures[id] = "ジョブがキャンセルされました"
+                    case .pending, .running:
+                        // Reappeared between the batch poll and this lookup -
+                        // still moving; pick it back up next round.
+                        remaining.insert(id)
+                    }
+                } catch {
+                    failures[id] = error.localizedDescription
+                }
+            }
+            if remaining.isEmpty { break }
+
+            if !everStarted, Date().timeIntervalSince(pendingSince) > Self.stalledQueueGracePeriod {
+                if queueIsMoving {
+                    pendingSince = Date()
+                    stalledObservations = 0
+                } else {
+                    stalledObservations += 1
+                    if stalledObservations >= 2 {
+                        let message = "ジョブが開始されないままです。サーバーで file-exploder デーモンが動作しているか確認してください "
+                            + "(systemctl --user status file-exploder)。ジョブはキューに残っています。"
+                        for id in remaining {
+                            failures[id] = message
+                        }
+                        return failures
+                    }
+                }
+            }
+
+            try await Task.sleep(nanoseconds: pollInterval)
+            pollInterval = min(pollInterval * 2, maxPollInterval)
+        }
+
+        return failures
+    }
+
     private func queueIsMoving() async throws -> Bool {
         try await getQueueStatus().contains { $0.status == .running }
     }

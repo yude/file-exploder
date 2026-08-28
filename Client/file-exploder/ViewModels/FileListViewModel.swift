@@ -93,6 +93,10 @@ class FileListViewModel: ObservableObject {
             NotificationCenter.default.removeObserver(settingsObserver)
         }
         refreshTask?.cancel()
+        // Mirrors disconnect(): a window closed mid-operation must not leave
+        // its SSH process running in the background just because nothing
+        // called disconnect() first.
+        ssh?.terminateAll()
     }
 
     func disconnect() {
@@ -209,13 +213,7 @@ class FileListViewModel: ObservableObject {
                 finalErrors.append("削除登録エラー (\(file.name)): \(error.localizedDescription)")
             }
         }
-        for operation in queued {
-            do {
-                try await sftp.waitForJob(id: operation.id)
-            } catch {
-                finalErrors.append("削除エラー (\(operation.name)): \(error.localizedDescription)")
-            }
-        }
+        finalErrors.append(contentsOf: await waitForQueuedOperations(queued, from: sftp, actionName: "削除"))
         await refreshThenReport(finalErrors, from: sftp)
     }
 
@@ -265,13 +263,7 @@ class FileListViewModel: ObservableObject {
             }
         }
         let actionName = type == "copy" ? "コピー" : "移動"
-        for operation in queued {
-            do {
-                try await sftp.waitForJob(id: operation.id)
-            } catch {
-                finalErrors.append("\(actionName)エラー (\(operation.name)): \(error.localizedDescription)")
-            }
-        }
+        finalErrors.append(contentsOf: await waitForQueuedOperations(queued, from: sftp, actionName: actionName))
         await refreshThenReport(finalErrors, from: sftp)
     }
 
@@ -291,13 +283,7 @@ class FileListViewModel: ObservableObject {
                 finalErrors.append("権限変更登録エラー (\(file.name)): \(error.localizedDescription)")
             }
         }
-        for operation in queued {
-            do {
-                try await sftp.waitForJob(id: operation.id)
-            } catch {
-                finalErrors.append("権限変更エラー (\(operation.name)): \(error.localizedDescription)")
-            }
-        }
+        finalErrors.append(contentsOf: await waitForQueuedOperations(queued, from: sftp, actionName: "権限変更"))
         await refreshThenReport(finalErrors, from: sftp)
     }
 
@@ -363,6 +349,12 @@ class FileListViewModel: ObservableObject {
         }
     }
 
+    /// Consecutive background-refresh failures tolerated before surfacing an
+    /// error, mirroring SFTPService.pollFailuresTolerated - one dropped
+    /// connection must not flash an error the very next tick clears on its
+    /// own.
+    private static let autoRefreshFailuresTolerated = 3
+
     private func startAutoRefresh() {
         refreshTask?.cancel()
         guard sftp != nil, refreshInterval.isFinite, refreshInterval > 0 else { return }
@@ -370,15 +362,32 @@ class FileListViewModel: ObservableObject {
         let startGeneration = navigationGeneration
 
         refreshTask = Task { [weak self] in
+            var consecutiveFailures = 0
             while !Task.isCancelled {
                 guard let self else { break }
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 guard !Task.isCancelled, startGeneration == self.navigationGeneration else { break }
-                if let sftp = self.sftp {
-                    let path = self.currentPath
-                    if let fileList = try? await sftp.listDirectory(path: path) {
-                        guard !Task.isCancelled, startGeneration == self.navigationGeneration else { break }
-                        self.files = self.sortedVisibleFiles(fileList)
+                guard let sftp = self.sftp else { continue }
+                let path = self.currentPath
+                do {
+                    let fileList = try await sftp.listDirectory(path: path)
+                    guard !Task.isCancelled, startGeneration == self.navigationGeneration else { break }
+                    self.files = self.sortedVisibleFiles(fileList)
+                    if consecutiveFailures > 0 {
+                        consecutiveFailures = 0
+                        self.errors.setListingError(nil)
+                    }
+                } catch {
+                    guard !Task.isCancelled, startGeneration == self.navigationGeneration else { break }
+                    // A background refresh used to swallow every failure and
+                    // retry forever with nothing to show for it - a listing
+                    // that quietly stopped updating looked identical to one
+                    // that hadn't changed. Surface it once it's persistent
+                    // rather than a single blip, the same tolerance
+                    // SFTPService gives a single job's polling.
+                    consecutiveFailures += 1
+                    if consecutiveFailures >= Self.autoRefreshFailuresTolerated {
+                        self.errors.setListingError(error.localizedDescription)
                     }
                 }
             }
@@ -406,6 +415,23 @@ class FileListViewModel: ObservableObject {
         return isPathAllowed(path) ? path : nil
     }
 
+    /// Waits for every queued operation and turns each unsuccessful outcome
+    /// into the same "<action>エラー (<name>): <message>" format the per-file
+    /// loop this replaces used to build one entry at a time - just backed by
+    /// SFTPService.waitForJobs' single shared poll instead of one waitForJob
+    /// per file.
+    private func waitForQueuedOperations(_ queued: [QueuedOperation], from sftp: SFTPService, actionName: String) async -> [String] {
+        guard !queued.isEmpty else { return [] }
+        do {
+            let failures = try await sftp.waitForJobs(ids: queued.map(\.id))
+            return queued.compactMap { operation in
+                failures[operation.id].map { "\(actionName)エラー (\(operation.name)): \($0)" }
+            }
+        } catch {
+            return queued.map { "\(actionName)エラー (\($0.name)): \(error.localizedDescription)" }
+        }
+    }
+
     /// Reports what an operation ran into, but only while the session it ran
     /// against is still the current one. Switching servers - or windows -
     /// mid-operation would otherwise surface errors about the old host next to
@@ -416,7 +442,10 @@ class FileListViewModel: ObservableObject {
         await refresh()
     }
 
-    private func reportOperationError(_ message: String) {
+    /// Not private: the view reports a few things it declines on its own -
+    /// a drag with one entry it won't move alongside others it will - that
+    /// never reach a ViewModel method at all.
+    func reportOperationError(_ message: String) {
         errors.addOperationError(message)
     }
 

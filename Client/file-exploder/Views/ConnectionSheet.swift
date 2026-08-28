@@ -107,7 +107,7 @@ struct ConnectionSheet: View {
                     !connectionFieldsAreValid ||
                     validPort == nil ||
                     !trimmedRoot.hasPrefix("/") || trimmedRoot.contains("\0") ||
-                    !keyPathIsValid
+                    (authType == .sshKey && !keyPathIsValid)
                 )
             }
             .padding()

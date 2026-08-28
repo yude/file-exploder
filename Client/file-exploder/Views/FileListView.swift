@@ -29,6 +29,11 @@ struct FileListView: View {
     }
     
     var body: some View {
+        // Computed once per render and reused below for both the empty-state
+        // check and the table's rows, instead of letting each access to
+        // filteredFiles redo its filter, and this sort, from scratch.
+        let visibleFiles = filteredFiles.sorted(using: sortOrder)
+
         VStack(spacing: 0) {
             // Toolbar
             toolbar
@@ -106,7 +111,7 @@ struct FileListView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if filteredFiles.isEmpty {
+            } else if visibleFiles.isEmpty {
                 Spacer()
                 VStack(spacing: 12) {
                     Image(systemName: "folder")
@@ -151,7 +156,7 @@ struct FileListView: View {
                     // Dragging belongs on the row, not on its cells. Putting it
                     // on the cells placed a gesture in front of the table's own
                     // handling and cost selection and double-click entirely.
-                    ForEach(filteredFiles.sorted(using: sortOrder)) { file in
+                    ForEach(visibleFiles) { file in
                         if file.isDirectory {
                             TableRow(file)
                                 .draggable(DraggedRemoteFile(path: file.path))
@@ -246,8 +251,8 @@ struct FileListView: View {
                 Text("\(filesToDelete.count) 項目を完全に削除します。元に戻せません。")
             }
         }
-        .onChange(of: viewModel.files.map(\.id)) { _, currentIDs in
-            selectedFiles.formIntersection(currentIDs)
+        .onChange(of: viewModel.files) { _, currentFiles in
+            selectedFiles.formIntersection(currentFiles.map(\.id))
         }
     }
     
@@ -260,37 +265,37 @@ struct FileListView: View {
                 Button(action: { Task { await viewModel.goBack() } }) {
                     Image(systemName: "chevron.left")
                 }
-                .disabled(!viewModel.canGoBack)
-                
+                .disabled(!viewModel.canGoBack || viewModel.isLoading)
+
                 Button(action: { Task { await viewModel.goForward() } }) {
                     Image(systemName: "chevron.right")
                 }
-                .disabled(!viewModel.canGoForward)
-                
+                .disabled(!viewModel.canGoForward || viewModel.isLoading)
+
                 Button(action: { Task { await viewModel.goToParent() } }) {
                     Image(systemName: "chevron.up")
                 }
-                .disabled(!viewModel.canGoToParent)
+                .disabled(!viewModel.canGoToParent || viewModel.isLoading)
             }
             .buttonStyle(.borderless)
-            
+
             Divider()
                 .frame(height: 20)
-            
+
             // Actions
             Button(action: { showNewFolderSheet = true }) {
                 Image(systemName: "folder.badge.plus")
             }
             .buttonStyle(.borderless)
             .help("新規フォルダ")
-            .disabled(!viewModel.hasConnection)
-            
+            .disabled(!viewModel.hasConnection || viewModel.isLoading)
+
             Button(action: { Task { await viewModel.reload() } }) {
                 Image(systemName: "arrow.clockwise")
             }
             .buttonStyle(.borderless)
             .help("更新")
-            .disabled(!viewModel.hasConnection)
+            .disabled(!viewModel.hasConnection || viewModel.isLoading)
             
             Spacer()
             
@@ -399,6 +404,13 @@ struct FileListView: View {
 
         let movable = sources.filter { RemotePath.canMove($0.path, into: destination) }
         guard !movable.isEmpty else { return false }
+
+        if movable.count < sources.count {
+            let movableIDs = Set(movable.map(\.id))
+            for skipped in sources where !movableIDs.contains(skipped.id) {
+                viewModel.reportOperationError("移動エラー (\(skipped.name)): 移動先に移動できないため対象から除外しました")
+            }
+        }
 
         Task { await viewModel.moveFiles(movable, to: destination) }
         return true
