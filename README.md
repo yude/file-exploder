@@ -98,6 +98,19 @@ systemctl --user show-environment | grep FILE_EXPLODER_DATA_DIR
 ssh <host> 'echo $FILE_EXPLODER_DATA_DIR'
 ```
 
+### ジョブのタイムアウトを変える
+
+デーモンは 1 ジョブにつき既定で 24 時間待ちます。応答しないマウント上のファイル操作は
+Go 側から中断できないため、これはハングしたジョブがキュー全体を永久に止めてしまわない
+ようにするための上限であり、大きなファイルを遅い回線ごしにコピーするような正当に時間の
+かかる操作を誤ってタイムアウトさせないよう、あえて長めに設定しています。デーモンだけが
+読む設定なので、CLI 側に届かせる必要はありません。
+
+```bash
+echo 'FILE_EXPLODER_JOB_TIMEOUT=2h' >> ~/.config/file-exploder/env
+systemctl --user restart file-exploder
+```
+
 ### クライアント (macOS)
 
 ```bash

@@ -1,11 +1,121 @@
 package cmd
 
 import (
+	"errors"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/yude/file-exploder/server/internal/queue"
 )
+
+var errFakeExecute = errors.New("fake execute failure")
+
+func newTestJobQueue(t *testing.T) *queue.SQLiteQueue {
+	t.Helper()
+	q, err := queue.NewSQLiteQueue(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = q.Close() })
+	return q
+}
+
+func addAndStartTestJob(t *testing.T, q *queue.SQLiteQueue, id string) *queue.Job {
+	t.Helper()
+	if err := q.AddJob(&queue.Job{ID: id, Type: queue.JobDelete, SrcPath: "/tmp/x", Status: queue.StatusPending, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if started, err := q.StartJob(id); err != nil || !started {
+		t.Fatalf("StartJob(%q) = %v, %v", id, started, err)
+	}
+	job, err := q.GetJob(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return job
+}
+
+var discardLogger = log.New(io.Discard, "", 0)
+
+func TestRunJobWithTimeoutRecordsANormalCompletion(t *testing.T) {
+	q := newTestJobQueue(t)
+	job := addAndStartTestJob(t, q, "quick")
+
+	runJobWithTimeout(q, func(*queue.Job) error { return nil }, job, time.Second, discardLogger)
+
+	got, err := q.GetJob("quick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != queue.StatusCompleted {
+		t.Fatalf("status = %q, want completed", got.Status)
+	}
+}
+
+func TestRunJobWithTimeoutRecordsANormalFailure(t *testing.T) {
+	q := newTestJobQueue(t)
+	job := addAndStartTestJob(t, q, "fails")
+
+	runJobWithTimeout(q, func(*queue.Job) error { return errFakeExecute }, job, time.Second, discardLogger)
+
+	got, err := q.GetJob("fails")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != queue.StatusFailed || got.Error != errFakeExecute.Error() {
+		t.Fatalf("job = %#v, want failed with %q", got, errFakeExecute.Error())
+	}
+}
+
+func TestRunJobWithTimeoutAbandonsAHungJobAndIgnoresItsLateResult(t *testing.T) {
+	q := newTestJobQueue(t)
+	job := addAndStartTestJob(t, q, "hung")
+
+	release := make(chan struct{})
+	returned := make(chan struct{})
+	execute := func(*queue.Job) error {
+		<-release
+		close(returned)
+		return nil
+	}
+
+	start := time.Now()
+	runJobWithTimeout(q, execute, job, 20*time.Millisecond, discardLogger)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("runJobWithTimeout waited %s for a hung job instead of giving up at its timeout", elapsed)
+	}
+
+	got, err := q.GetJob("hung")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != queue.StatusFailed || !strings.Contains(got.Error, "timed out") {
+		t.Fatalf("job = %#v, want failed with a timeout message", got)
+	}
+
+	// Let the "hung" goroutine finish and confirm its late result did not
+	// clobber the timeout outcome already recorded above.
+	close(release)
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("abandoned goroutine never observed the release signal")
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	got, err = q.GetJob("hung")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != queue.StatusFailed || !strings.Contains(got.Error, "timed out") {
+		t.Fatalf("late completion changed the recorded outcome: %#v", got)
+	}
+}
 
 func TestRotatingLogWriterRotatesDuringContinuousRun(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "queue.log")

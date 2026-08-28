@@ -94,7 +94,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			logger.Println("Shutdown signal received, stopping")
 			return nil
 		case <-ticker.C:
-			processPendingJobs(ctx, q, exec, logger)
+			processPendingJobs(ctx, q, exec, logger, cfg.JobTimeout)
 		}
 	}
 }
@@ -196,7 +196,7 @@ func (w *rotatingLogWriter) Close() error {
 	return err
 }
 
-func processPendingJobs(ctx context.Context, q queue.Queue, exec *executor.Executor, logger *log.Logger) {
+func processPendingJobs(ctx context.Context, q queue.Queue, exec *executor.Executor, logger *log.Logger, timeout time.Duration) {
 	jobs, err := q.GetPendingJobs()
 	if err != nil {
 		logger.Printf("Error fetching pending jobs: %v", err)
@@ -224,14 +224,41 @@ func processPendingJobs(ctx context.Context, q queue.Queue, exec *executor.Execu
 			continue
 		}
 
-		if err := exec.Execute(job); err != nil {
+		runJobWithTimeout(q, exec.Execute, job, timeout, logger)
+	}
+}
+
+// runJobWithTimeout runs execute(job) on its own goroutine and gives up on it
+// - marking it failed and returning control to the caller - if it does not
+// finish within timeout. Execute has no cancellation of its own (a blocked
+// syscall on an unresponsive mount cannot be interrupted from Go), so a
+// timed-out job's goroutine is left to finish in the background rather than
+// leaked forever: if it eventually returns, its outcome is logged but not
+// recorded, since finishRunningJob's own status='running' guard would reject
+// a write to a job this function has already marked terminal.
+func runJobWithTimeout(q queue.Queue, execute func(*queue.Job) error, job *queue.Job, timeout time.Duration, logger *log.Logger) {
+	done := make(chan error, 1)
+	go func() { done <- execute(job) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
 			logger.Printf("Job %s failed: %v", job.ID, err)
 			recordTerminalStatus(q, job.ID, queue.StatusFailed, err.Error(), logger)
-			continue
+			return
 		}
-
 		logger.Printf("Job %s completed", job.ID)
 		recordTerminalStatus(q, job.ID, queue.StatusCompleted, "", logger)
+	case <-time.After(timeout):
+		logger.Printf("Job %s exceeded its %s execution budget; marking it failed and moving on, but it may still be running in the background", job.ID, timeout)
+		recordTerminalStatus(q, job.ID, queue.StatusFailed, fmt.Sprintf("timed out after %s", timeout), logger)
+		go func() {
+			if err := <-done; err != nil {
+				logger.Printf("Job %s (already marked as timed out) eventually failed in the background: %v", job.ID, err)
+			} else {
+				logger.Printf("Job %s (already marked as timed out) eventually completed in the background", job.ID)
+			}
+		}()
 	}
 }
 
