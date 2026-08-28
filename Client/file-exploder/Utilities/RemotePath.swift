@@ -54,6 +54,21 @@ enum RemotePath {
         return !name.unicodeScalars.contains { $0 == "/" || $0 == "\0" }
     }
 
+    /// Whether `path` could be moved into `destination`.
+    ///
+    /// Rejects the two drops the server would only fail on: the entry is
+    /// already in that directory, and a directory dropped onto itself or into
+    /// its own subtree. Refusing them here means the drag is declined while the
+    /// user can still see what they aimed at, instead of a job appearing in the
+    /// queue and failing a moment later.
+    static func canMove(_ path: String, into destination: String) -> Bool {
+        let target = standardized(destination)
+        if parent(of: path) == target {
+            return false
+        }
+        return !isDescendant(target, of: path)
+    }
+
     /// Whether `path` is `root` or sits underneath it. Both sides are
     /// standardized first so `/srv/data/../data/x` is recognised as inside
     /// `/srv/data`.

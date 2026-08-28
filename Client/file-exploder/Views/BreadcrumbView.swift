@@ -4,6 +4,12 @@ struct BreadcrumbView: View {
     let path: String
     let rootPath: String
     let onNavigate: (String) -> Void
+    /// Handles rows dropped on a crumb, and reports whether it took them.
+    /// Moving something up a level is otherwise unreachable by dragging: the
+    /// parent directory has no row of its own to aim at.
+    let onDrop: ([DraggedRemoteFile], String) -> Bool
+
+    @State private var dropTarget: String?
     
     var pathComponents: [(String, String)] {
         var components: [(String, String)] = []
@@ -37,12 +43,12 @@ struct BreadcrumbView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
                 // Root
-                Button(action: {
-                    onNavigate(RemotePath.standardized(rootPath))
-                }) {
+                let root = RemotePath.standardized(rootPath)
+                Button(action: { onNavigate(root) }) {
                     Image(systemName: "house")
                 }
                 .buttonStyle(.borderless)
+                .modifier(CrumbDropTarget(destination: root, dropTarget: $dropTarget, onDrop: onDrop))
                 
                 ForEach(Array(pathComponents.enumerated()), id: \.offset) { index, component in
                     Image(systemName: "chevron.right")
@@ -53,6 +59,7 @@ struct BreadcrumbView: View {
                         Text(component.0)
                     }
                     .buttonStyle(.borderless)
+                    .modifier(CrumbDropTarget(destination: component.1, dropTarget: $dropTarget, onDrop: onDrop))
                 }
             }
             .font(.callout)
@@ -60,6 +67,37 @@ struct BreadcrumbView: View {
     }
 }
 
+/// Makes one crumb a drop target and tints it while a drag is over it.
+private struct CrumbDropTarget: ViewModifier {
+    let destination: String
+    @Binding var dropTarget: String?
+    let onDrop: ([DraggedRemoteFile], String) -> Bool
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(dropTarget == destination ? Color.accentColor.opacity(0.25) : Color.clear)
+            )
+            .dropDestination(for: DraggedRemoteFile.self) { dropped, _ in
+                dropTarget = nil
+                return onDrop(dropped, destination)
+            } isTargeted: { targeted in
+                if targeted {
+                    dropTarget = destination
+                } else if dropTarget == destination {
+                    dropTarget = nil
+                }
+            }
+    }
+}
+
 #Preview {
-    BreadcrumbView(path: "/home/user/documents", rootPath: "/home/user") { _ in }
+    BreadcrumbView(
+        path: "/home/user/documents",
+        rootPath: "/home/user",
+        onNavigate: { _ in },
+        onDrop: { _, _ in false }
+    )
 }

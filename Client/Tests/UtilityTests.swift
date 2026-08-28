@@ -241,3 +241,28 @@ final class RemotePathComponentTests: XCTestCase {
         XCTAssertFalse(RemotePath.isValidComponent("etc/\u{0301}passwd"))
     }
 }
+
+final class RemotePathMoveTests: XCTestCase {
+    func testAcceptsAMoveIntoAnotherDirectory() {
+        XCTAssertTrue(RemotePath.canMove("/srv/a.txt", into: "/srv/archive"))
+        XCTAssertTrue(RemotePath.canMove("/srv/docs", into: "/srv/archive"))
+        XCTAssertTrue(RemotePath.canMove("/srv/docs/deep/file", into: "/srv"))
+        XCTAssertTrue(RemotePath.canMove("/srv/a.txt", into: "/"))
+    }
+
+    func testRefusesAMoveIntoTheDirectoryItIsAlreadyIn() {
+        XCTAssertFalse(RemotePath.canMove("/srv/a.txt", into: "/srv"))
+        XCTAssertFalse(RemotePath.canMove("/srv/a.txt", into: "/srv/"))
+        XCTAssertFalse(RemotePath.canMove("/srv/a.txt", into: "/srv/./"))
+        XCTAssertFalse(RemotePath.canMove("/a.txt", into: "/"))
+    }
+
+    /// The drop the server rejects with "cannot move a directory into itself".
+    func testRefusesADirectoryDroppedIntoItsOwnSubtree() {
+        XCTAssertFalse(RemotePath.canMove("/srv/docs", into: "/srv/docs"))
+        XCTAssertFalse(RemotePath.canMove("/srv/docs", into: "/srv/docs/nested"))
+        XCTAssertFalse(RemotePath.canMove("/srv/docs", into: "/srv/docs/a/b/c"))
+        // A sibling that merely shares a prefix is fine.
+        XCTAssertTrue(RemotePath.canMove("/srv/docs", into: "/srv/docs-backup"))
+    }
+}

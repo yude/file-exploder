@@ -20,6 +20,7 @@ struct FileListView: View {
     
     @State private var showingDeleteConfirmation = false
     @State private var filesToDelete: [RemoteFile] = []
+    @State private var dropTarget: String?
     
     var filteredFiles: [RemoteFile] {
         if searchText.isEmpty {
@@ -36,9 +37,16 @@ struct FileListView: View {
             Divider()
             
             // Breadcrumb
-            BreadcrumbView(path: viewModel.currentPath, rootPath: viewModel.remoteRoot) { path in
-                Task { await viewModel.navigateTo(path: path) }
-            }
+            BreadcrumbView(
+                path: viewModel.currentPath,
+                rootPath: viewModel.remoteRoot,
+                onNavigate: { path in
+                    Task { await viewModel.navigateTo(path: path) }
+                },
+                onDrop: { dropped, destination in
+                    move(dropped, to: destination)
+                }
+            )
             .padding(.horizontal)
             .padding(.vertical, 6)
             
@@ -112,13 +120,7 @@ struct FileListView: View {
             } else {
                 Table(filteredFiles.sorted(using: sortOrder), selection: $selectedFiles, sortOrder: $sortOrder) {
                     TableColumn("名前", value: \.name) { file in
-                        HStack(spacing: 8) {
-                            Image(systemName: FileIcons.icon(for: file))
-                                .foregroundColor(file.isDirectory ? .accentColor : .secondary)
-                            
-                            Text(file.name)
-                                .lineLimit(1)
-                        }
+                        fileNameCell(file)
                     }
                     .width(min: 200, ideal: 300)
                     
@@ -348,6 +350,67 @@ struct FileListView: View {
                 showingDeleteConfirmation = true
             }
         }
+    }
+
+    // MARK: - Drag and drop
+
+    @ViewBuilder
+    private func fileNameCell(_ file: RemoteFile) -> some View {
+        let cell = HStack(spacing: 8) {
+            Image(systemName: FileIcons.icon(for: file))
+                .foregroundColor(file.isDirectory ? .accentColor : .secondary)
+
+            Text(file.name)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .draggable(DraggedRemoteFile(path: file.path))
+
+        if file.isDirectory {
+            cell
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(dropTarget == file.path ? Color.accentColor.opacity(0.25) : Color.clear)
+                )
+                .dropDestination(for: DraggedRemoteFile.self) { dropped, _ in
+                    dropTarget = nil
+                    return move(dropped, to: file.path)
+                } isTargeted: { targeted in
+                    if targeted {
+                        dropTarget = file.path
+                    } else if dropTarget == file.path {
+                        dropTarget = nil
+                    }
+                }
+        } else {
+            cell
+        }
+    }
+
+    /// Moves the dropped rows into `destination`, and reports whether it took
+    /// them - returning false leaves the system showing the drag as rejected.
+    private func move(_ dropped: [DraggedRemoteFile], to destination: String) -> Bool {
+        // Resolve against the rows on screen. A drag that started outside the
+        // app arrives as text that matches nothing and is declined here.
+        let droppedPaths = Set(dropped.map(\.path))
+        var sources = filteredFiles.filter { droppedPaths.contains($0.path) }
+        guard !sources.isEmpty else { return false }
+
+        // Dragging one row of a selection takes the whole selection, the way
+        // Finder does. Dragging an unselected row takes only that row.
+        if sources.count == 1, let only = sources.first, selectedFiles.contains(only.id) {
+            let selected = files(in: selectedFiles)
+            if !selected.isEmpty {
+                sources = selected
+            }
+        }
+
+        let movable = sources.filter { RemotePath.canMove($0.path, into: destination) }
+        guard !movable.isEmpty else { return false }
+
+        Task { await viewModel.moveFiles(movable, to: destination) }
+        return true
     }
 
     /// The rows a menu acts on. SwiftUI hands the context menu the effective
