@@ -86,7 +86,23 @@ func (e *Executor) executeRename(job *queue.Job) error {
 	err = renameNoReplace(job.SrcPath, job.DstPath)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("destination path already exists: %s", job.DstPath)
+			dstInfo, statErr := os.Lstat(job.DstPath)
+			if statErr != nil || !srcInfo.IsDir() || !dstInfo.IsDir() {
+				return fmt.Errorf("destination path already exists: %s", job.DstPath)
+			}
+			// Explorer-style folder merge: copy into the existing directory
+			// first, and remove the source only after the whole merge succeeds.
+			if copyErr := copyPath(job.SrcPath, job.DstPath); copyErr != nil {
+				return fmt.Errorf("directory merge failed during copy: %w", copyErr)
+			}
+			currentInfo, sourceErr := os.Lstat(job.SrcPath)
+			if sourceErr != nil || !os.SameFile(srcInfo, currentInfo) {
+				return fmt.Errorf("directory merge copied the destination but the source changed before deletion")
+			}
+			if delErr := os.RemoveAll(job.SrcPath); delErr != nil {
+				return fmt.Errorf("directory merge copied the destination but failed to delete the source: %w", delErr)
+			}
+			return nil
 		}
 		if errors.Is(err, syscall.EXDEV) || errors.Is(err, errNoReplaceUnsupported) {
 			if copyErr := copyPath(job.SrcPath, job.DstPath); copyErr != nil {
@@ -203,18 +219,16 @@ func copyPath(src, dst string) error {
 	if cleanedSrc == cleanedDst {
 		return fmt.Errorf("source and destination are the same path")
 	}
-	// Publishing still performs an atomic/no-replace check, but detect an
-	// already occupied destination before spending minutes copying a large tree
-	// into staging. Lstat is intentional: a dangling symlink also occupies the
-	// destination name and must not be followed or overwritten.
-	if _, err := os.Lstat(cleanedDst); err == nil {
-		return fmt.Errorf("destination already exists: %s", cleanedDst)
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
 	info, err := os.Lstat(src)
 	if err != nil {
 		return err
+	}
+	dstInfo, dstErr := os.Lstat(cleanedDst)
+	if dstErr != nil && !errors.Is(dstErr, fs.ErrNotExist) {
+		return dstErr
+	}
+	if dstErr == nil && (!info.IsDir() || !dstInfo.IsDir()) {
+		return fmt.Errorf("destination already exists: %s", cleanedDst)
 	}
 	if info.IsDir() {
 		inside, err := destinationInsideSource(cleanedSrc, cleanedDst)
@@ -223,6 +237,11 @@ func copyPath(src, dst string) error {
 		}
 		if inside {
 			return fmt.Errorf("cannot copy a directory into itself")
+		}
+		if dstErr == nil {
+			if err := validateDirectoryMerge(src, dst); err != nil {
+				return err
+			}
 		}
 		return copyDir(src, dst)
 	}
@@ -374,13 +393,101 @@ func copyDir(src, dst string) error {
 			return err
 		}
 	}
-	if err := publishStagedDirectory(staging, dst); err != nil {
+	if dstInfo, dstErr := os.Lstat(dst); dstErr == nil && dstInfo.IsDir() {
+		// Recheck after staging: the destination can change during a long copy.
+		if err := validateDirectoryMerge(staging, dst); err != nil {
+			return err
+		}
+		if err := mergeStagedDirectory(staging, dst); err != nil {
+			return err
+		}
+	} else if dstErr != nil && !errors.Is(dstErr, fs.ErrNotExist) {
+		return dstErr
+	} else if dstErr == nil {
+		return fmt.Errorf("destination already exists: %s", dst)
+	} else if err := publishStagedDirectory(staging, dst); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("destination already exists: %s", dst)
 		}
 		return err
 	}
 	return syncDir(dstParent)
+}
+
+// validateDirectoryMerge performs a read-only preflight so ordinary file
+// conflicts are reported before a potentially long staging copy starts.
+// Directories may overlap recursively; every other occupied name is left for
+// the user to resolve rather than being overwritten or silently skipped.
+func validateDirectoryMerge(src, dst string) error {
+	return filepath.Walk(src, func(srcPath string, srcInfo os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relPath, err := filepath.Rel(src, srcPath)
+		if err != nil {
+			return err
+		}
+		dstPath := dst
+		if relPath != "." {
+			dstPath = filepath.Join(dst, relPath)
+		}
+		dstInfo, err := os.Lstat(dstPath)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if srcInfo.IsDir() && dstInfo.IsDir() {
+			return nil
+		}
+		return fmt.Errorf("destination entry already exists: %s", dstPath)
+	})
+}
+
+// mergeStagedDirectory publishes only missing entries into an existing
+// directory. The caller has already preflighted conflicts, but every rename
+// still uses no-replace semantics to protect against concurrent changes.
+func mergeStagedDirectory(staging, dst string) error {
+	entries, err := os.ReadDir(staging)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		srcPath := filepath.Join(staging, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+		srcInfo, err := os.Lstat(srcPath)
+		if err != nil {
+			return err
+		}
+		dstInfo, dstErr := os.Lstat(dstPath)
+		switch {
+		case errors.Is(dstErr, fs.ErrNotExist):
+			if srcInfo.IsDir() {
+				err = publishStagedDirectory(srcPath, dstPath)
+			} else {
+				err = renameNoReplace(srcPath, dstPath)
+			}
+			if err != nil {
+				if errors.Is(err, os.ErrExist) {
+					return fmt.Errorf("destination entry appeared during merge: %s", dstPath)
+				}
+				return err
+			}
+		case dstErr != nil:
+			return dstErr
+		case srcInfo.IsDir() && dstInfo.IsDir():
+			if err := mergeStagedDirectory(srcPath, dstPath); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("destination entry appeared during merge: %s", dstPath)
+		}
+	}
+	if err := os.Remove(staging); err != nil {
+		return err
+	}
+	return syncDir(dst)
 }
 
 // publishStagedDirectory normally publishes the completed tree atomically.

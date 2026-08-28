@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"unicode/utf8"
 
@@ -62,25 +61,77 @@ func TestCopyFileDoesNotOverwrite(t *testing.T) {
 	}
 }
 
-func TestCopyDirectoryRejectsExistingDestinationBeforeWalkingSource(t *testing.T) {
+func TestCopyDirectoryMergesExistingDirectories(t *testing.T) {
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "source")
+	dst := filepath.Join(tmpDir, "destination")
+	if err := os.MkdirAll(filepath.Join(src, "shared"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "source-only"), []byte("source"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "shared", "from-source"), []byte("source nested"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dst, "shared"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "destination-only"), []byte("destination"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "shared", "from-destination"), []byte("destination nested"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyPath(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		filepath.Join(dst, "source-only"),
+		filepath.Join(dst, "destination-only"),
+		filepath.Join(dst, "shared", "from-source"),
+		filepath.Join(dst, "shared", "from-destination"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("merged entry missing at %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(src, "source-only")); err != nil {
+		t.Fatalf("copy removed source: %v", err)
+	}
+}
+
+func TestCopyDirectoryRejectsFileConflictBeforeChangingDestination(t *testing.T) {
 	tmpDir := t.TempDir()
 	src := filepath.Join(tmpDir, "source")
 	dst := filepath.Join(tmpDir, "destination")
 	if err := os.Mkdir(src, 0755); err != nil {
 		t.Fatal(err)
 	}
-	// This unsupported entry would fail during the walk. Seeing the destination
-	// collision instead proves the executor did not start an expensive copy.
-	if err := syscall.Mkfifo(filepath.Join(src, "named-pipe"), 0600); err != nil {
+	if err := os.Mkdir(dst, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(dst, 0755); err != nil {
+	if err := os.WriteFile(filepath.Join(src, "a-would-be-added"), []byte("new"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "z-conflict"), []byte("source"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "z-conflict"), []byte("destination"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
 	err := copyPath(src, dst)
-	if err == nil || !strings.Contains(err.Error(), "destination already exists") {
-		t.Fatalf("copy error = %v, want existing destination", err)
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(dst, "z-conflict")) {
+		t.Fatalf("copy error = %v, want exact conflicting path", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "a-would-be-added")); !os.IsNotExist(err) {
+		t.Fatalf("destination changed before conflict was reported: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dst, "z-conflict"))
+	if err != nil || string(data) != "destination" {
+		t.Fatalf("conflicting destination changed to %q, %v", data, err)
 	}
 }
 
@@ -297,6 +348,70 @@ func TestExecuteRenameRejectsDirectoryIntoItself(t *testing.T) {
 	}
 	if _, statErr := os.Stat(src); statErr != nil {
 		t.Fatalf("source directory disturbed: %v", statErr)
+	}
+}
+
+func TestExecuteMoveMergesDirectoriesThenRemovesSource(t *testing.T) {
+	e := NewExecutor(nil)
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "source")
+	dst := filepath.Join(tmpDir, "destination")
+	if err := os.Mkdir(src, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dst, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "from-source"), []byte("source"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "from-destination"), []byte("destination"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := e.Execute(&queue.Job{Type: queue.JobMove, SrcPath: src, DstPath: dst})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Fatalf("source survived successful merge: %v", err)
+	}
+	for _, name := range []string{"from-source", "from-destination"} {
+		if _, err := os.Stat(filepath.Join(dst, name)); err != nil {
+			t.Errorf("merged entry %s missing: %v", name, err)
+		}
+	}
+}
+
+func TestExecuteMoveConflictLeavesBothTreesUntouched(t *testing.T) {
+	e := NewExecutor(nil)
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "source")
+	dst := filepath.Join(tmpDir, "destination")
+	if err := os.Mkdir(src, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dst, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "same-name"), []byte("source"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "same-name"), []byte("destination"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := e.Execute(&queue.Job{Type: queue.JobMove, SrcPath: src, DstPath: dst}); err == nil {
+		t.Fatal("move unexpectedly overwrote a conflicting file")
+	}
+	for path, want := range map[string]string{
+		filepath.Join(src, "same-name"): "source",
+		filepath.Join(dst, "same-name"): "destination",
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil || string(data) != want {
+			t.Errorf("%s = %q, %v; want %q", path, data, err, want)
+		}
 	}
 }
 
