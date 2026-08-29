@@ -1,7 +1,10 @@
+using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using FileExploder.Models;
+using FileExploder.Services;
 using FileExploder.Views;
 
 namespace FileExploder.Tests;
@@ -90,6 +93,82 @@ public sealed class UiSmokeTests : IDisposable
         Assert.Equal(2, grid.ItemsSource!.Cast<object>().Count());
 
         window.Close();
+    }
+
+    /// The "新しいウィンドウ" (Ctrl+N) menu item: each window is independent,
+    /// but shares the saved-server list and settings underneath - ports
+    /// FileExploderWindowCommands' openWindow(id: "main").
+    [Fact]
+    public void NewWindowMenuItemOpensAnIndependentSecondWindow()
+    {
+        var opened = new List<MainWindow>();
+        void Capture(MainWindow w) => opened.Add(w);
+        MainWindow.WindowOpenedForTesting += Capture;
+
+        var first = new MainWindow();
+        try
+        {
+            first.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            // Headless mode never establishes a classic-desktop
+            // ApplicationLifetime (that only happens via Program.Main's
+            // StartWithClassicDesktopLifetime), so there is no window
+            // registry to discover an opened window through - hence the
+            // capture hook above instead.
+            first.NewWindowMenuItemForTesting.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Dispatcher.UIThread.RunJobs();
+
+            var second = Assert.Single(opened);
+            Assert.NotSame(first, second);
+            Assert.NotSame(first.ConnectionViewModel, second.ConnectionViewModel);
+        }
+        finally
+        {
+            MainWindow.WindowOpenedForTesting -= Capture;
+            foreach (var window in opened)
+            {
+                window.Close();
+            }
+            first.Close();
+        }
+    }
+
+    /// The "設定..." (Ctrl+,) menu item: ports FileExploderApp.swift's
+    /// Settings scene.
+    [Fact]
+    public void SettingsMenuItemOpensAWindowReflectingCurrentSettings()
+    {
+        var settingsFile = Path.GetTempFileName();
+        File.Delete(settingsFile);
+        AppSettings.UseFileForTesting(settingsFile);
+        AppSettings.ShowHiddenFiles = true;
+        AppSettings.RefreshInterval = 12;
+
+        try
+        {
+            var window = new MainWindow();
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            window.SettingsMenuItemForTesting.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Dispatcher.UIThread.RunJobs();
+
+            var settingsWindow = window.OwnedWindows.OfType<SettingsWindow>().FirstOrDefault();
+            Assert.NotNull(settingsWindow);
+
+            var checkBox = FindDescendant<CheckBox>(settingsWindow!, "ShowHiddenFilesCheckBox")!;
+            var slider = FindDescendant<Slider>(settingsWindow!, "RefreshIntervalSlider")!;
+            Assert.True(checkBox.IsChecked);
+            Assert.Equal(12, slider.Value);
+
+            settingsWindow!.Close();
+            window.Close();
+        }
+        finally
+        {
+            File.Delete(settingsFile);
+        }
     }
 
     private static void PumpUntilCompleted(Task task, TimeSpan timeout)

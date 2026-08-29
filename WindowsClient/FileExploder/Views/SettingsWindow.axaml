@@ -1,0 +1,16 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="FileExploder.Views.SettingsWindow"
+        Width="350" SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Title="設定">
+    <StackPanel Margin="20" Spacing="16">
+        <TextBlock Text="一般" FontWeight="Bold" FontSize="12" Foreground="Gray" />
+        <CheckBox Name="ShowHiddenFilesCheckBox" Content="隠しファイルを表示" />
+        <StackPanel Spacing="4">
+            <TextBlock Name="RefreshIntervalLabel" Text="更新間隔 (秒)" />
+            <Slider Name="RefreshIntervalSlider" Minimum="1" Maximum="30" TickFrequency="1" IsSnapToTickEnabled="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

@@ -6,23 +6,33 @@
         Width="1100" Height="650"
         MinWidth="800" MinHeight="500"
         Title="FileExploder">
-    <Grid ColumnDefinitions="250,Auto,*,Auto,Auto">
-        <views:SidebarView Grid.Column="0" Name="Sidebar" MinWidth="200" MaxWidth="360" />
-        <GridSplitter Grid.Column="1" Width="4" ResizeDirection="Columns" Background="Transparent" />
+    <Grid RowDefinitions="Auto,*">
+        <Menu Grid.Row="0">
+            <MenuItem Header="ファイル">
+                <MenuItem Name="NewWindowMenuItem" Header="新しいウィンドウ" InputGesture="Ctrl+N" />
+                <Separator />
+                <MenuItem Name="SettingsMenuItem" Header="設定..." InputGesture="Ctrl+OemComma" />
+            </MenuItem>
+        </Menu>
 
-        <Grid Grid.Column="2" RowDefinitions="Auto,*">
-            <Grid Grid.Row="0" Name="TitleBar" ColumnDefinitions="Auto,Auto,*,Auto,Auto" Margin="12,6" IsVisible="False">
-                <TextBlock Grid.Column="0" Text="💾" Foreground="Green" Margin="0,0,6,0" />
-                <TextBlock Grid.Column="1" Name="ServerNameText" FontWeight="Medium" FontSize="13" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="2" Name="ServerAddressText" Foreground="Gray" FontSize="11" VerticalAlignment="Center" Margin="6,0,0,0" />
-                <Button Grid.Column="3" Name="DisconnectButton" Classes="borderless" Content="✕" Foreground="Red" ToolTip.Tip="切断" />
-                <Button Grid.Column="4" Name="ToggleQueueButton" Classes="borderless" Content="🗂" ToolTip.Tip="キューパネルを切り替え" />
+        <Grid Grid.Row="1" ColumnDefinitions="250,Auto,*,Auto,Auto">
+            <views:SidebarView Grid.Column="0" Name="Sidebar" MinWidth="200" MaxWidth="360" />
+            <GridSplitter Grid.Column="1" Width="4" ResizeDirection="Columns" Background="Transparent" />
+
+            <Grid Grid.Column="2" RowDefinitions="Auto,*">
+                <Grid Grid.Row="0" Name="TitleBar" ColumnDefinitions="Auto,Auto,*,Auto,Auto" Margin="12,6" IsVisible="False">
+                    <TextBlock Grid.Column="0" Text="💾" Foreground="Green" Margin="0,0,6,0" />
+                    <TextBlock Grid.Column="1" Name="ServerNameText" FontWeight="Medium" FontSize="13" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Name="ServerAddressText" Foreground="Gray" FontSize="11" VerticalAlignment="Center" Margin="6,0,0,0" />
+                    <Button Grid.Column="3" Name="DisconnectButton" Classes="borderless" Content="✕" Foreground="Red" ToolTip.Tip="切断" />
+                    <Button Grid.Column="4" Name="ToggleQueueButton" Classes="borderless" Content="🗂" ToolTip.Tip="キューパネルを切り替え" />
+                </Grid>
+                <Separator Grid.Row="0" Name="TitleBarSeparator" VerticalAlignment="Bottom" IsVisible="False" />
+                <views:FileListView Grid.Row="1" Name="FileList" />
             </Grid>
-            <Separator Grid.Row="0" Name="TitleBarSeparator" VerticalAlignment="Bottom" IsVisible="False" />
-            <views:FileListView Grid.Row="1" Name="FileList" />
-        </Grid>
 
-        <GridSplitter Grid.Column="3" Width="4" Name="QueueSplitter" ResizeDirection="Columns" Background="Transparent" IsVisible="False" />
-        <views:QueuePanelView Grid.Column="4" Name="QueuePanel" IsVisible="False" />
+            <GridSplitter Grid.Column="3" Width="4" Name="QueueSplitter" ResizeDirection="Columns" Background="Transparent" IsVisible="False" />
+            <views:QueuePanelView Grid.Column="4" Name="QueuePanel" IsVisible="False" />
+        </Grid>
     </Grid>
 </Window>
