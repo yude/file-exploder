@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/yude/file-exploder/server/internal/queue"
@@ -1024,5 +1025,29 @@ func TestStagingNamesRoundTripThroughTheSweep(t *testing.T) {
 			t.Errorf("%q: sweep would not recognise its own staging directory %q", name, filepath.Base(dir))
 		}
 		os.RemoveAll(dir)
+	}
+}
+
+// resolveWithTimeout bounds destinationInsideSource's two symlink-resolving
+// calls the same way cmd/add.go's guardDataDir bounds its own (see
+// resolveWithTimeout's doc comment) - a hung resolver must be given up on
+// rather than blocking destinationInsideSource, and by extension every
+// directory move/copy the daemon executes, for as long as the daemon's own
+// per-job timeout (24h by default).
+func TestResolveWithTimeoutGivesUpOnAHungResolve(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	hungResolve := func(string) (string, error) {
+		<-release
+		return "", nil
+	}
+
+	start := time.Now()
+	_, err := resolveWithTimeout(hungResolve, "/anything", 20*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("resolveWithTimeout waited %s instead of giving up at its timeout", elapsed)
+	}
+	if err == nil {
+		t.Fatal("resolveWithTimeout reported success for a resolve that never returned")
 	}
 }

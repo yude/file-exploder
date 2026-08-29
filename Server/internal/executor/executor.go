@@ -10,10 +10,17 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/yude/file-exploder/server/internal/queue"
 	"golang.org/x/sys/unix"
 )
+
+// symlinkResolveTimeout bounds a single symlink resolution the same way
+// cmd/list.go's constant of the same name bounds one there - this package
+// cannot import cmd (cmd already imports executor), so it keeps its own copy
+// rather than share the value across a package boundary that doesn't exist.
+const symlinkResolveTimeout = 2 * time.Second
 
 type Executor struct {
 	q queue.Queue
@@ -647,15 +654,43 @@ func publishStagedDirectoryWithoutAtomicRename(staging, dst string) error {
 // operation runs: rename(2) reports it as EINVAL, which is indistinguishable
 // from "this filesystem does not support RENAME_NOREPLACE".
 func destinationInsideSource(src, dst string) (bool, error) {
-	resolvedSrc, err := filepath.EvalSymlinks(filepath.Clean(src))
+	resolvedSrc, err := resolveWithTimeout(filepath.EvalSymlinks, filepath.Clean(src), symlinkResolveTimeout)
 	if err != nil {
 		return false, err
 	}
-	resolvedDst, err := ResolveAllowMissing(filepath.Clean(dst))
+	resolvedDst, err := resolveWithTimeout(ResolveAllowMissing, filepath.Clean(dst), symlinkResolveTimeout)
 	if err != nil {
 		return false, err
 	}
 	return pathWithin(resolvedSrc, resolvedDst)
+}
+
+// resolveWithTimeout bounds a symlink-resolving call (filepath.EvalSymlinks or
+// ResolveAllowMissing) the same way cmd/add.go's guardDataDir bounds its own -
+// a symlink on the way to src or dst can point into a stale "hard" NFS/SMB/
+// FUSE mount, and both underlying calls block in uninterruptible sleep on such
+// a mount with no way for Go to cancel it. destinationInsideSource runs on
+// every directory move or copy the daemon executes (see its two call sites
+// above), so without this bound one such job hangs until the daemon's own
+// per-job timeout gives up - default 24h, versus every other symlink
+// resolution in this codebase (list.go, add.go's guardDataDir) being capped
+// at symlinkResolveTimeout.
+func resolveWithTimeout(resolve func(string) (string, error), path string, timeout time.Duration) (string, error) {
+	type result struct {
+		path string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		resolved, err := resolve(path)
+		done <- result{resolved, err}
+	}()
+	select {
+	case r := <-done:
+		return r.path, r.err
+	case <-time.After(timeout):
+		return "", fmt.Errorf("timed out resolving symlinks in %s after %s", path, timeout)
+	}
 }
 
 // stagingPattern builds the temp-name pattern a copy is assembled under.
