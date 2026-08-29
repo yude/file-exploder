@@ -33,6 +33,8 @@ public sealed partial class SshConnection : ObservableObject
 
     private readonly Server _server;
     private readonly KnownHostsStore _knownHosts;
+
+    public Server Server => _server;
     private readonly Lock _gate = new();
     private SshClient? _client;
     private bool _invalidated;
