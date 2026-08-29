@@ -18,6 +18,14 @@ class SFTPService {
     /// much larger budget instead of inheriting executeCommand's default.
     private static let listDirectoryTimeout: TimeInterval = 900
 
+    /// A directory large enough to need listDirectoryTimeout's longer budget
+    /// is also large enough to produce a JSON response well past
+    /// SSHConnection's default 64MB stdout cap - which would otherwise fail
+    /// exactly that case with outputTooLarge instead of succeeding within the
+    /// longer timeout. 512MB comfortably covers directories far larger than
+    /// the 900s timeout is itself sized for.
+    private static let listDirectoryOutputLimit = 512 * 1024 * 1024
+
     /// List directory contents
     func listDirectory(path: String) async throws -> [RemoteFile] {
         // Keep the path ASCII until it reaches the Go process. Passing a
@@ -29,7 +37,8 @@ class SFTPService {
             command,
             legacyCommand: legacyCommand,
             unsupportedFlags: ["--path-base64"],
-            timeout: Self.listDirectoryTimeout
+            timeout: Self.listDirectoryTimeout,
+            outputLimit: Self.listDirectoryOutputLimit
         )
         guard let data = jsonPayload(of: output) else {
             throw QueueError.invalidResponse("Empty response")
@@ -187,6 +196,13 @@ class SFTPService {
         throw QueueError.invalidResponse("処理がタイムアウトしました。ジョブ画面で状態を確認してください")
     }
 
+    /// Concurrency cap for resolving several jobs' final outcomes at once:
+    /// high enough that a burst of simultaneous completions in a large batch
+    /// doesn't serialize behind each other's SSH round trip, low enough that
+    /// a very large batch doesn't spawn an unbounded number of ssh child
+    /// processes in one instant.
+    private static let maxConcurrentJobLookups = 8
+
     /// Waits for every job in `ids` to leave the active queue, sharing a
     /// single getQueueStatus() poll per interval across the whole batch
     /// instead of paying one getJobStatus() SSH round trip per job per poll -
@@ -194,10 +210,17 @@ class SFTPService {
     /// used to do by calling waitForJob(id:) once per file, fully serially.
     ///
     /// Once a job leaves the active list it is looked up individually exactly
-    /// once, to learn how it actually finished. Everything else about the
-    /// wait - the stalled-queue detection, the poll-failure tolerance -
-    /// mirrors waitForJob(id:) above, just shared across the batch instead of
-    /// tracked per job.
+    /// once, to learn how it actually finished - a bounded number of these
+    /// lookups run concurrently, so a burst of simultaneous completions
+    /// doesn't serialize behind each other's SSH round trip either. Everything
+    /// else about the wait - the stalled-queue detection, the poll-failure
+    /// tolerance - mirrors waitForJob(id:) above, just shared across the
+    /// batch instead of tracked per job. The one exception is deliberate:
+    /// whether a job has ever been seen running is tracked per id (not one
+    /// shared flag), so one job starting quickly doesn't disable stalled-queue
+    /// detection for every other id in the same batch - a job that hasn't
+    /// itself started waits out the same grace period waitForJob(id:) would
+    /// give it alone.
     ///
     /// Returns the ids that did not complete successfully, mapped to an error
     /// message; an id that isn't a key in the result succeeded.
@@ -206,11 +229,11 @@ class SFTPService {
 
         var remaining = Set(ids)
         var failures: [String: String] = [:]
+        var startedIDs: Set<String> = []
 
         var pollInterval: UInt64 = 300_000_000
         let maxPollInterval: UInt64 = 3_000_000_000
         var pendingSince = Date()
-        var everStarted = false
         var stalledObservations = 0
         var consecutiveFailures = 0
 
@@ -235,17 +258,15 @@ class SFTPService {
 
             let activeByID = Dictionary(uniqueKeysWithValues: activeJobs.map { ($0.id, $0) })
             let queueIsMoving = activeJobs.contains { $0.status == .running }
-            if remaining.contains(where: { activeByID[$0]?.status == .running }) {
-                everStarted = true
+            for id in remaining where activeByID[id]?.status == .running {
+                startedIDs.insert(id)
             }
 
-            // A snapshot, not `remaining` itself: this loop removes ids from
-            // `remaining` as it resolves them, and mutating a Set while
-            // iterating over that same instance is undefined.
-            for id in remaining.filter({ activeByID[$0] == nil }) {
+            let justFinished = remaining.filter { activeByID[$0] == nil }
+            for (id, result) in await Self.resolveOutcomes(justFinished, using: getJobStatus) {
                 remaining.remove(id)
-                do {
-                    let job = try await getJobStatus(id: id)
+                switch result {
+                case .success(let job):
                     switch job.status {
                     case .completed:
                         break
@@ -258,13 +279,18 @@ class SFTPService {
                         // still moving; pick it back up next round.
                         remaining.insert(id)
                     }
-                } catch {
+                case .failure(let error):
                     failures[id] = error.localizedDescription
                 }
             }
             if remaining.isEmpty { break }
 
-            if !everStarted, Date().timeIntervalSince(pendingSince) > Self.stalledQueueGracePeriod {
+            // Only ids that have never themselves started are eligible for
+            // the stalled-queue failure below; an id that already started
+            // keeps waiting unbounded, exactly like waitForJob(id:) does for
+            // a single job.
+            let neverStarted = remaining.subtracting(startedIDs)
+            if !neverStarted.isEmpty, Date().timeIntervalSince(pendingSince) > Self.stalledQueueGracePeriod {
                 if queueIsMoving {
                     pendingSince = Date()
                     stalledObservations = 0
@@ -273,10 +299,11 @@ class SFTPService {
                     if stalledObservations >= 2 {
                         let message = "ジョブが開始されないままです。サーバーで file-exploder デーモンが動作しているか確認してください "
                             + "(systemctl --user status file-exploder)。ジョブはキューに残っています。"
-                        for id in remaining {
+                        for id in neverStarted {
                             failures[id] = message
                         }
-                        return failures
+                        remaining.subtract(neverStarted)
+                        if remaining.isEmpty { break }
                     }
                 }
             }
@@ -286,6 +313,38 @@ class SFTPService {
         }
 
         return failures
+    }
+
+    /// Resolves each id in `ids` with `lookup`, running up to
+    /// maxConcurrentJobLookups at once instead of one at a time, so a burst of
+    /// simultaneously-finished jobs doesn't serialize behind each other's SSH
+    /// round trip.
+    private static func resolveOutcomes(
+        _ ids: some Sequence<String>,
+        using lookup: @escaping (String) async throws -> QueueJob
+    ) async -> [(id: String, result: Result<QueueJob, Error>)] {
+        await withTaskGroup(of: (String, Result<QueueJob, Error>).self) { group in
+            var iterator = ids.makeIterator()
+
+            func launchNext() {
+                guard let id = iterator.next() else { return }
+                group.addTask {
+                    do {
+                        return (id, .success(try await lookup(id)))
+                    } catch {
+                        return (id, .failure(error))
+                    }
+                }
+            }
+            for _ in 0..<maxConcurrentJobLookups { launchNext() }
+
+            var collected: [(String, Result<QueueJob, Error>)] = []
+            while let outcome = await group.next() {
+                collected.append(outcome)
+                launchNext()
+            }
+            return collected
+        }
     }
 
     private func queueIsMoving() async throws -> Bool {
@@ -306,17 +365,18 @@ class SFTPService {
         _ command: String,
         legacyCommand: String,
         unsupportedFlags: [String],
-        timeout: TimeInterval = 120
+        timeout: TimeInterval = 120,
+        outputLimit: Int = SSHConnection.defaultOutputLimit
     ) async throws -> String {
         do {
-            return try await ssh.executeCommand(command, timeout: timeout)
+            return try await ssh.executeCommand(command, timeout: timeout, outputLimit: outputLimit)
         } catch {
             let message = error.localizedDescription
             let isUnsupported = unsupportedFlags.contains {
                 message.contains("unknown flag: \($0)")
             }
             guard isUnsupported else { throw error }
-            return try await ssh.executeCommand(legacyCommand, timeout: timeout)
+            return try await ssh.executeCommand(legacyCommand, timeout: timeout, outputLimit: outputLimit)
         }
     }
 

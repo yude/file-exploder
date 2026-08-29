@@ -50,6 +50,16 @@ struct QueuePanelView: View {
             .pickerStyle(.segmented)
             .padding(.horizontal)
             .padding(.bottom, 8)
+            // The polling task no longer restarts on a tab switch (it's keyed
+            // on the connection alone now, so it stops wiping the other tab's
+            // already-loaded data) - but that means switching tabs no longer
+            // forces an immediate fetch either, so the just-selected tab
+            // would otherwise show stale or empty data until the next
+            // 2-second tick happens to land. refresh() already guards
+            // against overlapping an in-flight poll.
+            .onChange(of: selectedTab) { _, _ in
+                Task { await refresh() }
+            }
             
             Divider()
 

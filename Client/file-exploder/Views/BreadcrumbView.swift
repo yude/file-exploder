@@ -28,7 +28,11 @@ struct BreadcrumbView: View {
         } else {
             relativePath = String(current.dropFirst(root.count + 1))
         }
-        let parts = relativePath.split(separator: "/").map(String.init)
+        // RemotePath's own scalar-based splitting, not split(separator: "/"):
+        // a "/" immediately followed by a combining mark fuses into one
+        // Character that isn't "/", the same hazard RemotePath.swift had to
+        // fix in its own splitting.
+        let parts = RemotePath.splitComponents(relativePath)
 
         var currentPath = root
         for part in parts {

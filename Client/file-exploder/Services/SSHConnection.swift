@@ -27,10 +27,19 @@ class SSHConnection: ObservableObject, @unchecked Sendable {
         }
     }
 
-    func executeCommand(_ command: String, timeout: TimeInterval = 120) async throws -> String {
+    /// The default stdout cap, sized for an ordinary control command's
+    /// response. Callers expecting a much larger payload - a directory
+    /// listing, say - should pass a correspondingly larger `outputLimit`
+    /// alongside a longer `timeout`; a generous timeout paired with this
+    /// default would otherwise fail exactly the large-response case the
+    /// longer timeout was meant to allow, with outputTooLarge instead of a
+    /// timeout.
+    static let defaultOutputLimit = 64 * 1024 * 1024
+
+    func executeCommand(_ command: String, timeout: TimeInterval = 120, outputLimit: Int = SSHConnection.defaultOutputLimit) async throws -> String {
         try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask {
-                try await self.runCommand(command)
+                try await self.runCommand(command, outputLimit: outputLimit)
             }
             group.addTask {
                 let boundedTimeout = timeout.isFinite ? min(max(timeout, 1), 86_400) : 120
@@ -80,7 +89,7 @@ class SSHConnection: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func runCommand(_ command: String) async throws -> String {
+    private func runCommand(_ command: String, outputLimit: Int) async throws -> String {
         try Task.checkCancellation()
 
         let process = Process()
@@ -102,7 +111,7 @@ class SSHConnection: ObservableObject, @unchecked Sendable {
                 process.standardOutput = pipe
                 process.standardError = errorPipe
 
-                let outputData = SendableData(limit: 64 * 1024 * 1024)
+                let outputData = SendableData(limit: outputLimit)
                 let errorData = SendableData(limit: 1024 * 1024)
 
                 // Each pipe is drained to EOF by a single thread, then the exit

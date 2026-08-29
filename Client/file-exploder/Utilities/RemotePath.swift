@@ -12,7 +12,12 @@ enum RemotePath {
     /// Relative input is returned untouched: callers reject it separately, and
     /// silently rooting it would invent a path the user never asked for.
     static func standardized(_ path: String) -> String {
-        guard path.hasPrefix("/") else { return path }
+        // Scalar-based, not path.hasPrefix("/"): a leading "/" immediately
+        // followed by a combining mark fuses into one Character that isn't
+        // "/", the same hazard splitComponents below exists to avoid - so a
+        // Character-based check here could wrongly treat an absolute path as
+        // relative and return it untouched.
+        guard path.unicodeScalars.first == "/" else { return path }
 
         var components: [String] = []
         for component in splitComponents(path) {
@@ -45,7 +50,11 @@ enum RemotePath {
     /// (see isValidComponent's own note on the same hazard). Empty
     /// components - leading, trailing or duplicated separators - are
     /// omitted, matching `split(separator:)`'s default behaviour.
-    private static func splitComponents(_ path: String) -> [String] {
+    ///
+    /// Not private: BreadcrumbView needs the same safe splitting for its own
+    /// path components and must not duplicate the unsafe Character-based
+    /// version this replaced.
+    static func splitComponents(_ path: String) -> [String] {
         var result: [String] = []
         var current = ""
         for scalar in path.unicodeScalars {
@@ -102,8 +111,17 @@ enum RemotePath {
     static func isDescendant(_ path: String, of root: String) -> Bool {
         let root = standardized(root)
         let target = standardized(path)
-        guard root.hasPrefix("/"), target.hasPrefix("/") else { return false }
+        // Scalar-based, matching standardized()'s own guard above.
+        guard root.unicodeScalars.first == "/", target.unicodeScalars.first == "/" else { return false }
         if root == "/" { return true }
-        return target == root || target.hasPrefix(root + "/")
+
+        // Component-by-component, not target.hasPrefix(root + "/"): if the
+        // first component directly under root begins with a combining mark,
+        // the "/" root + "/" ends with fuses with it into one Character that
+        // a plain string hasPrefix check can't match against a bare "/".
+        let rootComponents = splitComponents(root)
+        let targetComponents = splitComponents(target)
+        guard targetComponents.count >= rootComponents.count else { return false }
+        return Array(targetComponents.prefix(rootComponents.count)) == rootComponents
     }
 }

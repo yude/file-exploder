@@ -289,6 +289,17 @@ class FileListViewModel: ObservableObject {
 
     @discardableResult
     private func loadPath(_ path: String, updateHistory: Bool) async -> Bool {
+        // The toolbar disables itself while isLoading, but breadcrumb
+        // navigation and double-click-to-open don't go through the toolbar
+        // at all - each fires its own Task regardless of what's already in
+        // flight. Guarding here, in the one place every navigation path
+        // funnels through, covers all of them at once instead of needing
+        // the same isLoading check duplicated at every UI entry point:
+        // whichever call is already running keeps going, and a call that
+        // arrives while it's in flight is simply dropped rather than
+        // starting a second concurrent listDirectory against the same
+        // connection.
+        guard !isLoading else { return false }
         guard let sftp, isPathAllowed(path) else {
             if self.sftp != nil { reportOperationError("アクセスが許可されていません") }
             return false
@@ -363,31 +374,49 @@ class FileListViewModel: ObservableObject {
 
         refreshTask = Task { [weak self] in
             var consecutiveFailures = 0
+            var hasReportedFailure = false
             while !Task.isCancelled {
-                guard let self else { break }
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-                guard !Task.isCancelled, startGeneration == self.navigationGeneration else { break }
-                guard let sftp = self.sftp else { continue }
-                let path = self.currentPath
+                guard !Task.isCancelled else { break }
+
+                // `self` is deliberately re-checked fresh each iteration
+                // rather than bound once at the top of the loop and reused
+                // across the long await below: holding a strong `self`
+                // across it would keep this view model - and the SSH
+                // process deinit's ssh?.terminateAll() exists to stop -
+                // alive for however long listDirectory's 900s budget takes,
+                // even after every external reference to it is gone.
+                guard let snapshot = self.map({ (sftp: $0.sftp, path: $0.currentPath, generation: $0.navigationGeneration) }) else {
+                    break // the view model itself is gone; nothing left to refresh
+                }
+                guard snapshot.generation == startGeneration else { break }
+                guard let sftp = snapshot.sftp else { continue } // not connected (yet/anymore); keep waiting
+
                 do {
-                    let fileList = try await sftp.listDirectory(path: path)
-                    guard !Task.isCancelled, startGeneration == self.navigationGeneration else { break }
+                    let fileList = try await sftp.listDirectory(path: snapshot.path)
+                    guard !Task.isCancelled, let self, self.navigationGeneration == startGeneration else { break }
                     self.files = self.sortedVisibleFiles(fileList)
-                    if consecutiveFailures > 0 {
-                        consecutiveFailures = 0
-                        self.errors.setListingError(nil)
-                    }
+                    consecutiveFailures = 0
+                    hasReportedFailure = false
                 } catch {
-                    guard !Task.isCancelled, startGeneration == self.navigationGeneration else { break }
+                    guard !Task.isCancelled, let self, self.navigationGeneration == startGeneration else { break }
                     // A background refresh used to swallow every failure and
                     // retry forever with nothing to show for it - a listing
                     // that quietly stopped updating looked identical to one
                     // that hadn't changed. Surface it once it's persistent
                     // rather than a single blip, the same tolerance
-                    // SFTPService gives a single job's polling.
+                    // SFTPService gives a single job's polling - but through
+                    // the dismissible operation-error banner, not
+                    // listingError: that slot replaces the whole file table
+                    // with a full-page retry screen, which would hide an
+                    // already-loaded, still-valid listing behind an error
+                    // about a refresh that merely couldn't confirm it's
+                    // still current. Reported at most once per failing
+                    // streak, not on every poll past the threshold.
                     consecutiveFailures += 1
-                    if consecutiveFailures >= Self.autoRefreshFailuresTolerated {
-                        self.errors.setListingError(error.localizedDescription)
+                    if consecutiveFailures > Self.autoRefreshFailuresTolerated, !hasReportedFailure {
+                        hasReportedFailure = true
+                        self.reportOperationError("バックグラウンド更新エラー: \(error.localizedDescription)")
                     }
                 }
             }

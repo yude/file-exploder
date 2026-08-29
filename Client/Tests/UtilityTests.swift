@@ -19,6 +19,22 @@ final class RemotePathTests: XCTestCase {
         XCTAssertEqual(RemotePath.parent(of: "/srv/data"), "/srv")
         XCTAssertEqual(RemotePath.parent(of: "/"), "/")
     }
+
+    /// standardized()'s own entry guard used to check `path.hasPrefix("/")`,
+    /// which - like the Character-based split(separator:) this file already
+    /// had to stop using - is defeated by a leading "/" fused with a
+    /// following combining mark into one Character that isn't "/".
+    func testStandardizedHandlesALeadingCombiningMarkComponent() {
+        XCTAssertEqual(RemotePath.standardized("/\u{0301}a/../b"), "/b")
+    }
+
+    /// isDescendant's containment check used to be `target.hasPrefix(root +
+    /// "/")`, which the same combining-mark hazard defeats: the "/" that
+    /// `root + "/"` ends with fuses with a following combining mark into one
+    /// Character a plain hasPrefix check can't match.
+    func testDescendantRecognisesAChildStartingWithACombiningMark() {
+        XCTAssertTrue(RemotePath.isDescendant("/srv/\u{0301}archive/x", of: "/srv"))
+    }
 }
 
 final class RFC3339ParserTests: XCTestCase {
