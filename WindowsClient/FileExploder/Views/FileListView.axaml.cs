@@ -28,6 +28,8 @@ public partial class FileListView : UserControl
     private string _searchText = "";
     private List<RemoteFile> _lastComputedFiles = [];
 
+    internal DataGrid FilesGridForTesting => FilesGrid;
+
     // Column sorting is handled entirely here, not by the DataGrid's own
     // built-in sort machinery: re-deriving the sorted list ourselves from
     // FilesViewModel.Files + the search text + whichever column the user
@@ -171,10 +173,21 @@ public partial class FileListView : UserControl
     /// this, every auto-refresh tick would silently drop the user's
     /// selection, since the grid has no way to know the new instances refer
     /// to the same remote files.
+    ///
+    /// Reassigning ItemsSource synchronously clears SelectedItems, but the
+    /// SelectionChanged notification for that clear is dispatcher-posted,
+    /// not synchronous (verified empirically against this Avalonia version)
+    /// - so it is never actually delivered mid-method here, since nothing
+    /// below yields back to the dispatcher before this method returns.
+    /// Reading `toRestore` from a snapshot taken *before* the reassignment,
+    /// rather than from `_selectedIds` itself afterward, removes the
+    /// dependency on that ordering detail rather than relying on it holding
+    /// across Avalonia versions.
     private void ApplyFiles(List<RemoteFile> files)
     {
+        var toRestore = _selectedIds;
         FilesGrid.ItemsSource = files;
-        _selectedIds.IntersectWith(files.Select(f => f.Id));
+        _selectedIds = [.. toRestore.Intersect(files.Select(f => f.Id))];
         FilesGrid.SelectedItems.Clear();
         foreach (var file in files.Where(f => _selectedIds.Contains(f.Id)))
         {

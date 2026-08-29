@@ -17,6 +17,19 @@ public partial class ConnectionWindow : Window
     private FileListViewModel _fileListVM = null!;
     private Server? _editing;
 
+    internal bool IsSaveEnabledForTesting => SaveButton.IsEnabled;
+
+    internal void SetFieldsForTesting(string name, string hostname, string port, string username, string keyPath, string remoteRoot)
+    {
+        NameBox.Text = name;
+        HostnameBox.Text = hostname;
+        PortBox.Text = port;
+        UsernameBox.Text = username;
+        KeyPathBox.Text = keyPath;
+        RemoteRootBox.Text = remoteRoot;
+        UpdateSaveEnabled();
+    }
+
     public ConnectionWindow()
     {
         InitializeComponent();
@@ -72,9 +85,30 @@ public partial class ConnectionWindow : Window
         get
         {
             var trimmed = (KeyPathBox.Text ?? "").Trim();
-            return !trimmed.Contains('\0') && (trimmed.Length == 0 || trimmed.StartsWith('/'));
+            // The key path is local to whatever machine runs this client -
+            // unlike the remote root below, which is always POSIX since the
+            // server is always Linux. Requiring a leading '/' here (as
+            // ConnectionSheet.swift does, correctly, for a macOS local path)
+            // would reject every real Windows path ("C:\Users\...",
+            // "\\server\share\...") including whatever the "参照" file
+            // picker itself returns, leaving Save permanently disabled.
+            return !trimmed.Contains('\0') && (trimmed.Length == 0 || IsAbsoluteLocalPath(trimmed));
         }
     }
+
+    /// Whether `path` is absolute under any of the shapes this local field
+    /// might hold, checked explicitly rather than via Path.IsPathRooted:
+    /// that call's answer depends on the OS actually running it (Windows
+    /// rules on Windows, POSIX rules elsewhere) - correct for validating a
+    /// real save on a real machine, but it would make "a Windows path is
+    /// accepted" pass or fail depending only on which OS happens to run the
+    /// check, including this project's own CI (which runs on Linux, not
+    /// Windows). Recognizing POSIX, Windows drive letters and UNC
+    /// explicitly keeps this identical everywhere it runs.
+    private static bool IsAbsoluteLocalPath(string path) =>
+        path.StartsWith('/')
+        || path.StartsWith(@"\\", StringComparison.Ordinal)
+        || (path.Length >= 3 && char.IsAsciiLetter(path[0]) && path[1] == ':' && path[2] is '\\' or '/');
 
     private bool ConnectionFieldsAreValid
     {

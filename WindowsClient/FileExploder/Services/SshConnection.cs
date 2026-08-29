@@ -279,6 +279,22 @@ public sealed partial class SshConnection : ObservableObject
             {
                 throw;
             }
+            catch (OperationCanceledException)
+            {
+                // Neither this call's own timeout nor its caller's
+                // cancellationToken caused it - the remaining possibility is
+                // a concurrent TerminateAll() cancelling this command out
+                // from under it. SshCommand.CancelAsync surfaces that as a
+                // bare TaskCanceledException, which would otherwise leak
+                // past every caller that catches SshClientException or
+                // plain OperationCanceledException specifically. Every
+                // current call site happens to already guard against acting
+                // on a stale result some other way, so this has no known
+                // user-visible symptom today - but normalize it regardless,
+                // so a future or currently-unguarded caller doesn't surface
+                // a raw, unlocalized "A task was canceled." message.
+                throw new OperationCanceledException();
+            }
 
             // stderr is only used below, on the failure path, so an
             // oversized stderr must not discard stdout - the actual payload

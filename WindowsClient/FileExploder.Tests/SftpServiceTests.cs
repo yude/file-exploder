@@ -130,10 +130,21 @@ public sealed class SftpServiceTests(LocalSshFixture fixture) : IDisposable
     {
         var service = await NewServiceAsync();
         // A job the daemon is unlikely to have started yet: cancel races the
-        // daemon's own polling loop, so this only asserts cancellation is
-        // accepted without error - not that the mkdir never ran.
+        // daemon's own polling loop. The server legitimately refuses to
+        // cancel a job that already started or finished (cmd/cancel.go),
+        // so - not just "the mkdir might still have run" - the cancel call
+        // itself can legitimately fail here too; either outcome is
+        // acceptable, only an exception other than the documented
+        // already-running/finished one is not.
         var id = await service.AddToQueueAsync("mkdir", src: null, dst: Path.Combine(_scratchDir, "cancel-race"));
-        await service.CancelJobAsync(id);
+        try
+        {
+            await service.CancelJobAsync(id);
+        }
+        catch (SshCommandFailedException ex) when (ex.Message.Contains("already running/finished", StringComparison.Ordinal))
+        {
+            // Lost the race - acceptable, see above.
+        }
 
         var job = await service.GetJobStatusAsync(id);
         Assert.True(job.Status is JobStatus.Cancelled or JobStatus.Completed or JobStatus.Running or JobStatus.Failed);

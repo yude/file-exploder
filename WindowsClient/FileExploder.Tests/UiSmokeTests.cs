@@ -1,4 +1,3 @@
-using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
@@ -20,6 +19,11 @@ namespace FileExploder.Tests;
 /// trusting the UI, particularly the drag-and-drop wiring described in
 /// FileListView's row-drag comments, which headless pointer simulation
 /// does not attempt to cover here.
+///
+/// Every test body runs entirely inside HeadlessApp.RunOnUiThread - see its
+/// doc comment for why: Avalonia's dispatcher is affinitized to one thread
+/// process-wide, and xUnit does not guarantee the same physical thread runs
+/// every [Fact] even within one serialized collection.
 [Collection("Local SSH")]
 public sealed class UiSmokeTests : IDisposable
 {
@@ -29,7 +33,6 @@ public sealed class UiSmokeTests : IDisposable
     public UiSmokeTests(LocalSshFixture fixture)
     {
         _fixture = fixture;
-        HeadlessApp.EnsureInitialized();
         Directory.CreateDirectory(_scratchDir);
     }
 
@@ -42,16 +45,16 @@ public sealed class UiSmokeTests : IDisposable
     }
 
     [Fact]
-    public void MainWindowConstructsAndShowsWithoutThrowing()
+    public void MainWindowConstructsAndShowsWithoutThrowing() => HeadlessApp.RunOnUiThread(() =>
     {
         var window = new MainWindow();
         window.Show();
         Dispatcher.UIThread.RunJobs();
         window.Close();
-    }
+    });
 
     [Fact]
-    public void ConnectingPopulatesTheRealFileGridAndBreadcrumb()
+    public void ConnectingPopulatesTheRealFileGridAndBreadcrumb() => HeadlessApp.RunOnUiThread(() =>
     {
         File.WriteAllText(Path.Combine(_scratchDir, "hello.txt"), "hi");
         Directory.CreateDirectory(Path.Combine(_scratchDir, "subdir"));
@@ -93,13 +96,59 @@ public sealed class UiSmokeTests : IDisposable
         Assert.Equal(2, grid.ItemsSource!.Cast<object>().Count());
 
         window.Close();
-    }
+    });
+
+    /// FilesGrid.ItemsSource reassignment synchronously clears
+    /// SelectedItems, and (verified separately) the SelectionChanged
+    /// notification for that clear is dispatcher-posted rather than
+    /// synchronous - so it isn't actually delivered until after ApplyFiles
+    /// already finished restoring the right selection in this Avalonia
+    /// version. This test protects the user-facing guarantee itself
+    /// (selection survives a refresh) regardless of that implementation
+    /// detail, through the real DataGrid rather than only the ViewModel's
+    /// own _selectedIds bookkeeping.
+    [Fact]
+    public void SelectionSurvivesAFileListRefresh() => HeadlessApp.RunOnUiThread(() =>
+    {
+        File.WriteAllText(Path.Combine(_scratchDir, "a.txt"), "a");
+        File.WriteAllText(Path.Combine(_scratchDir, "b.txt"), "b");
+
+        var window = new MainWindow();
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+
+        var server = new Server
+        {
+            Name = "selection-test",
+            Hostname = "localhost",
+            Port = (ushort)_fixture.Port,
+            Username = _fixture.Username,
+            KeyPath = _fixture.PrivateKeyPath,
+            RemoteRoot = _scratchDir,
+        };
+        PumpUntilCompleted(window.ConnectionViewModel.ConnectAsync(server, window.FileListViewModel), TimeSpan.FromSeconds(15));
+
+        var grid = window.FileListViewForTesting.FilesGridForTesting;
+        var toSelect = grid.ItemsSource!.Cast<RemoteFile>().First(f => f.Name == "a.txt");
+        grid.SelectedItems.Add(toSelect);
+        Dispatcher.UIThread.RunJobs();
+        Assert.Single(grid.SelectedItems);
+
+        // A fresh ListDirectoryAsync call, exactly like a real auto-refresh
+        // tick: brand new RemoteFile instances for the same paths.
+        PumpUntilCompleted(window.FileListViewModel.RefreshAsync(), TimeSpan.FromSeconds(15));
+
+        var stillSelected = Assert.Single(grid.SelectedItems.Cast<RemoteFile>());
+        Assert.Equal("a.txt", stillSelected.Name);
+
+        window.Close();
+    });
 
     /// The "新しいウィンドウ" (Ctrl+N) menu item: each window is independent,
     /// but shares the saved-server list and settings underneath - ports
     /// FileExploderWindowCommands' openWindow(id: "main").
     [Fact]
-    public void NewWindowMenuItemOpensAnIndependentSecondWindow()
+    public void NewWindowMenuItemOpensAnIndependentSecondWindow() => HeadlessApp.RunOnUiThread(() =>
     {
         var opened = new List<MainWindow>();
         void Capture(MainWindow w) => opened.Add(w);
@@ -132,12 +181,12 @@ public sealed class UiSmokeTests : IDisposable
             }
             first.Close();
         }
-    }
+    });
 
     /// The "設定..." (Ctrl+,) menu item: ports FileExploderApp.swift's
     /// Settings scene.
     [Fact]
-    public void SettingsMenuItemOpensAWindowReflectingCurrentSettings()
+    public void SettingsMenuItemOpensAWindowReflectingCurrentSettings() => HeadlessApp.RunOnUiThread(() =>
     {
         var settingsFile = Path.GetTempFileName();
         File.Delete(settingsFile);
@@ -169,7 +218,7 @@ public sealed class UiSmokeTests : IDisposable
         {
             File.Delete(settingsFile);
         }
-    }
+    });
 
     private static void PumpUntilCompleted(Task task, TimeSpan timeout)
     {
