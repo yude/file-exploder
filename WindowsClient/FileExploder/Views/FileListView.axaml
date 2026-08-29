@@ -1,0 +1,89 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:FileExploder.ViewModels"
+             xmlns:models="using:FileExploder.Models"
+             xmlns:dg="using:Avalonia.Controls"
+             xmlns:views="using:FileExploder.Views"
+             x:Class="FileExploder.Views.FileListView"
+             x:DataType="vm:FileListViewModel">
+    <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,*">
+        <!-- Toolbar -->
+        <Grid Grid.Row="0" Margin="12,8" ColumnDefinitions="Auto,Auto,*,Auto">
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="0">
+                <Button Name="BackButton" Classes="borderless" Content="◀" />
+                <Button Name="ForwardButton" Classes="borderless" Content="▶" />
+                <Button Name="UpButton" Classes="borderless" Content="▲" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="0" Margin="12,0,0,0">
+                <Button Name="NewFolderButton" Classes="borderless" Content="📁➕" ToolTip.Tip="新規フォルダ" />
+                <Button Name="ReloadButton" Classes="borderless" Content="🔄" ToolTip.Tip="更新" />
+            </StackPanel>
+            <TextBlock Grid.Column="2" />
+            <TextBlock Grid.Column="3" Name="SelectionCountText" Foreground="Gray" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0" />
+        </Grid>
+        <Separator Grid.Row="0" VerticalAlignment="Bottom" />
+
+        <Grid Grid.Row="1" Margin="12,4">
+            <TextBox Name="SearchBox" PlaceholderText="ファイルを検索" />
+        </Grid>
+
+        <!-- Breadcrumb -->
+        <views:BreadcrumbView Grid.Row="2" Name="Breadcrumb" Margin="12,6" />
+        <Separator Grid.Row="2" VerticalAlignment="Bottom" />
+
+        <!-- Operation error banner -->
+        <StackPanel Grid.Row="3" Name="OperationErrorBanner" Orientation="Horizontal" Margin="12,6" Spacing="8" IsVisible="False">
+            <TextBlock Text="⚠️" VerticalAlignment="Top" />
+            <TextBlock Name="OperationErrorText" FontSize="12" Foreground="Gray" TextWrapping="Wrap" VerticalAlignment="Top" MaxWidth="600" />
+            <Button Name="DismissOperationErrorButton" Classes="borderless" Content="✕" HorizontalAlignment="Right" />
+        </StackPanel>
+        <Separator Grid.Row="3" Name="OperationErrorSeparator" VerticalAlignment="Bottom" IsVisible="False" />
+
+        <!-- Content states -->
+        <Grid Grid.Row="5">
+            <StackPanel Name="NoConnectionState" Spacing="12" HorizontalAlignment="Center" VerticalAlignment="Center" IsVisible="False">
+                <TextBlock Text="🔌" FontSize="32" HorizontalAlignment="Center" Foreground="Gray" />
+                <TextBlock Text="サーバーを選択して接続してください" Foreground="Gray" />
+            </StackPanel>
+
+            <StackPanel Name="LoadingState" Spacing="12" HorizontalAlignment="Center" VerticalAlignment="Center" IsVisible="False">
+                <TextBlock Text="読み込み中..." Foreground="Gray" />
+            </StackPanel>
+
+            <StackPanel Name="ListingErrorState" Spacing="12" HorizontalAlignment="Center" VerticalAlignment="Center" IsVisible="False" MaxWidth="500">
+                <TextBlock Text="⚠️" FontSize="32" HorizontalAlignment="Center" Foreground="Orange" />
+                <TextBlock Name="ListingErrorText" Foreground="Gray" TextWrapping="Wrap" HorizontalAlignment="Center" TextAlignment="Center" />
+                <Button Name="RetryButton" Content="再試行" HorizontalAlignment="Center" />
+            </StackPanel>
+
+            <StackPanel Name="EmptyDirectoryState" Spacing="12" HorizontalAlignment="Center" VerticalAlignment="Center" IsVisible="False">
+                <TextBlock Text="📁" FontSize="32" HorizontalAlignment="Center" Foreground="Gray" />
+                <TextBlock Text="ファイルがありません" Foreground="Gray" />
+            </StackPanel>
+
+            <dg:DataGrid Name="FilesGrid" IsVisible="False"
+                         AutoGenerateColumns="False"
+                         CanUserSortColumns="False"
+                         CanUserResizeColumns="True"
+                         SelectionMode="Extended"
+                         GridLinesVisibility="Horizontal"
+                         IsReadOnly="True">
+                <dg:DataGrid.Columns>
+                    <dg:DataGridTemplateColumn Header="名前" Width="300" SortMemberPath="Name">
+                        <dg:DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate x:DataType="models:RemoteFile">
+                                <StackPanel Orientation="Horizontal" Spacing="8" Margin="4,0">
+                                    <TextBlock Text="{Binding Converter={x:Static views:FileListConverters.FileToIcon}}" />
+                                    <TextBlock Text="{Binding Name}" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </dg:DataGridTemplateColumn.CellTemplate>
+                    </dg:DataGridTemplateColumn>
+                    <dg:DataGridTextColumn Header="サイズ" Width="100" Binding="{ReflectionBinding FormattedSize}" SortMemberPath="Size" />
+                    <dg:DataGridTextColumn Header="更新日時" Width="160" Binding="{ReflectionBinding FormattedDate}" SortMemberPath="ModificationDate" />
+                    <dg:DataGridTextColumn Header="権限" Width="100" Binding="{ReflectionBinding SymbolicPermissions}" SortMemberPath="SymbolicPermissions" FontFamily="monospace" />
+                </dg:DataGrid.Columns>
+            </dg:DataGrid>
+        </Grid>
+    </Grid>
+</UserControl>

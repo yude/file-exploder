@@ -1,0 +1,69 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:models="using:FileExploder.Models"
+             xmlns:views="using:FileExploder.Views"
+             xmlns:conv="using:Avalonia.Data.Converters"
+             x:Class="FileExploder.Views.QueuePanelView"
+             Width="260">
+    <Grid RowDefinitions="Auto,Auto,Auto,*">
+        <Grid Grid.Row="0" Margin="12,8" ColumnDefinitions="*,Auto,Auto">
+            <TextBlock Grid.Column="0" Text="ジョブ" FontWeight="Bold" VerticalAlignment="Center" />
+            <Button Grid.Column="1" Name="CopyAllButton" Classes="borderless" Content="📋" ToolTip.Tip="履歴をすべてコピー" />
+            <Button Grid.Column="2" Name="RefreshButton" Classes="borderless" Content="🔄" />
+        </Grid>
+
+        <Grid Grid.Row="1" Margin="12,0,12,8" ColumnDefinitions="*,*">
+            <ToggleButton Grid.Column="0" Name="QueueTabButton" Content="キュー" HorizontalContentAlignment="Center" />
+            <ToggleButton Grid.Column="1" Name="HistoryTabButton" Content="履歴" HorizontalContentAlignment="Center" />
+        </Grid>
+        <Separator Grid.Row="2" />
+
+        <Grid Grid.Row="3">
+            <StackPanel Name="ActionErrorBanner" Orientation="Horizontal" Margin="12,6" Spacing="6" IsVisible="False" VerticalAlignment="Top">
+                <TextBlock Text="⚠️" />
+                <TextBlock Name="ActionErrorText" FontSize="11" Foreground="Gray" TextWrapping="Wrap" MaxWidth="180" />
+                <Button Name="DismissActionErrorButton" Classes="borderless" Content="✕" FontSize="10" />
+            </StackPanel>
+
+            <TextBlock Name="PollErrorText" Foreground="Red" FontSize="12" Margin="12" TextWrapping="Wrap"
+                       HorizontalAlignment="Center" VerticalAlignment="Center" IsVisible="False" />
+
+            <StackPanel Name="EmptyState" Spacing="8" HorizontalAlignment="Center" VerticalAlignment="Center" IsVisible="False">
+                <TextBlock Name="EmptyStateIcon" FontSize="24" HorizontalAlignment="Center" Foreground="Gray" />
+                <TextBlock Name="EmptyStateText" FontSize="11" Foreground="Gray" />
+            </StackPanel>
+
+            <ListBox Name="JobList" Background="Transparent" Margin="0,28,0,0">
+                <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="models:QueueJob">
+                        <StackPanel Spacing="4" Margin="8,4">
+                            <Grid ColumnDefinitions="Auto,*,Auto">
+                                <TextBlock Grid.Column="0" Text="{Binding Type, Converter={x:Static views:QueueConverters.TypeToIcon}}" Margin="0,0,6,0" />
+                                <TextBlock Grid.Column="1" Text="{Binding Type, Converter={x:Static views:QueueConverters.TypeToDisplayName}}" FontWeight="Medium" FontSize="12" />
+                                <Border Grid.Column="2" Background="{Binding Status, Converter={x:Static views:QueueConverters.StatusToBrush}}" CornerRadius="4" Padding="6,1">
+                                    <TextBlock Text="{Binding Status, Converter={x:Static views:QueueConverters.StatusToDisplayName}}" FontSize="10" Foreground="White" />
+                                </Border>
+                            </Grid>
+                            <TextBlock Text="{Binding Description}" FontSize="11" Foreground="Gray" TextWrapping="Wrap" MaxLines="2" />
+                            <TextBlock Text="{Binding Error}" FontSize="11" Foreground="Red" TextWrapping="Wrap" MaxLines="2"
+                                       IsVisible="{Binding Error, Converter={x:Static conv:StringConverters.IsNotNullOrEmpty}}" />
+                            <TextBlock Text="{Binding CompletedAt, Converter={x:Static views:QueueConverters.CompletedAtToDisplayDate}}" FontSize="9" Foreground="Gray"
+                                       IsVisible="{Binding CompletedAt, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
+                            <Button Content="キャンセル" Classes="borderless" FontSize="11" Padding="0" Click="OnCancelJobClick"
+                                    IsVisible="{Binding Status, Converter={x:Static views:QueueConverters.IsPending}}" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+                <ListBox.Styles>
+                    <Style Selector="ListBoxItem">
+                        <Setter Property="ContextMenu">
+                            <ContextMenu>
+                                <MenuItem Header="ログをコピー" Click="OnCopyLogClick" />
+                            </ContextMenu>
+                        </Setter>
+                    </Style>
+                </ListBox.Styles>
+            </ListBox>
+        </Grid>
+    </Grid>
+</UserControl>

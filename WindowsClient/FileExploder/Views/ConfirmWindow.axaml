@@ -1,0 +1,16 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="FileExploder.Views.ConfirmWindow"
+        Width="360" SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Title="FileExploder">
+    <StackPanel Margin="20" Spacing="16">
+        <TextBlock Name="HeaderText" FontWeight="Bold" FontSize="15" TextWrapping="Wrap" />
+        <TextBlock Name="MessageText" TextWrapping="Wrap" Foreground="Gray" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+            <Button Name="CancelButton" Content="キャンセル" IsCancel="True" />
+            <Button Name="ConfirmButton" IsDefault="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

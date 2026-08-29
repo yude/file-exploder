@@ -145,6 +145,21 @@ public static class OperationTypeExtensions
         OperationType.Chmod => "権限変更",
         _ => throw new ArgumentOutOfRangeException(nameof(type), type, message: null),
     };
+
+    /// A pragmatic emoji substitute for the macOS client's SF Symbols
+    /// (pencil/arrow.right.doc.on.clipboard/trash/doc.on.doc/
+    /// folder.badge.plus/lock.shield) - see FileIcons for the same
+    /// tradeoff applied to file entries.
+    public static string Icon(this OperationType type) => type switch
+    {
+        OperationType.Rename => "✏️",
+        OperationType.Move => "📋",
+        OperationType.Delete => "🗑️",
+        OperationType.Copy => "📄",
+        OperationType.Mkdir => "📁",
+        OperationType.Chmod => "🔒",
+        _ => throw new ArgumentOutOfRangeException(nameof(type), type, message: null),
+    };
 }
 
 [JsonConverter(typeof(JobStatusJsonConverter))]

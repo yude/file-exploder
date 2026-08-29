@@ -1,7 +1,6 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
-using FileExploder.ViewModels;
 using FileExploder.Views;
 
 namespace FileExploder;
@@ -17,10 +16,7 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            desktop.MainWindow = new MainWindow
-            {
-                DataContext = new MainViewModel(),
-            };
+            desktop.MainWindow = new MainWindow();
         }
 
         base.OnFrameworkInitializationCompleted();

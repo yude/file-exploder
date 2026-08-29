@@ -1,0 +1,46 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="FileExploder.Views.ConnectionWindow"
+        Width="450" Height="500"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Title="FileExploder">
+    <Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
+        <Grid Grid.Row="0" Margin="16" ColumnDefinitions="*,Auto">
+            <TextBlock Name="HeaderText" Grid.Column="0" FontWeight="Bold" FontSize="15" VerticalAlignment="Center" />
+        </Grid>
+        <Separator Grid.Row="1" />
+
+        <ScrollViewer Grid.Row="2" Margin="16">
+            <StackPanel Spacing="16">
+                <StackPanel Spacing="6">
+                    <TextBlock Text="接続設定" FontWeight="Bold" FontSize="12" Foreground="Gray" />
+                    <TextBox Name="NameBox" PlaceholderText="表示名" />
+                    <TextBox Name="HostnameBox" PlaceholderText="ホスト名" />
+                    <TextBox Name="PortBox" PlaceholderText="ポート番号" />
+                    <TextBox Name="UsernameBox" PlaceholderText="ユーザー名" />
+                </StackPanel>
+
+                <StackPanel Spacing="6">
+                    <TextBlock Text="認証方法" FontWeight="Bold" FontSize="12" Foreground="Gray" />
+                    <ComboBox Name="AuthTypeBox" HorizontalAlignment="Stretch" />
+                    <Grid ColumnDefinitions="*,Auto" Name="KeyPathRow">
+                        <TextBox Name="KeyPathBox" Grid.Column="0" PlaceholderText="SSHキーパス" Margin="0,0,8,0" />
+                        <Button Name="BrowseButton" Grid.Column="1" Content="参照" />
+                    </Grid>
+                </StackPanel>
+
+                <StackPanel Spacing="6">
+                    <TextBlock Text="リモート設定" FontWeight="Bold" FontSize="12" Foreground="Gray" />
+                    <TextBox Name="RemoteRootBox" PlaceholderText="ルートディレクトリ" />
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+
+        <Separator Grid.Row="3" />
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="16">
+            <Button Name="CancelButton" Content="キャンセル" IsCancel="True" />
+            <Button Name="SaveButton" IsDefault="True" Classes="accent" />
+        </StackPanel>
+    </Grid>
+</Window>
