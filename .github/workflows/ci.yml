@@ -73,3 +73,44 @@ jobs:
       - uses: actions/checkout@v7
       - run: swift build
       - run: swift test
+
+  windows-client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: Server/go.mod
+          cache-dependency-path: Server/go.sum
+
+      # WindowsClient/FileExploder.Tests' "Local SSH" tests (SftpService,
+      # the ViewModels, the headless UI smoke tests) exercise the real
+      # file-exploder daemon over a real SSH connection, the same way local
+      # development does - so both need to be up before `dotnet test`, not
+      # just the .NET toolchain.
+      - name: Build and start the file-exploder daemon
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          go build -buildvcs=false -o "$HOME/.local/bin/file-exploder" .
+          nohup "$HOME/.local/bin/file-exploder" daemon > /tmp/file-exploder-daemon.log 2>&1 &
+        working-directory: Server
+      - name: Start a local SSH server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server
+          sudo mkdir -p /run/sshd
+          sudo service ssh start
+
+      - run: dotnet build FileExploder.slnx
+        working-directory: WindowsClient
+      - run: dotnet test FileExploder.slnx
+        working-directory: WindowsClient
+      # Not published anywhere - this only confirms the project still
+      # produces a genuine win-x64 executable, the same check used
+      # throughout development since this CI runner (like the dev sandbox)
+      # can't run one.
+      - run: dotnet publish FileExploder/FileExploder.csproj -c Release -r win-x64 --self-contained false
+        working-directory: WindowsClient

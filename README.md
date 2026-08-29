@@ -1,10 +1,13 @@
 # file-exploder
 
-サーバー側でファイル操作をキューイングする、macOS ネイティブの SSH リモートファイルマネージャです。
+サーバー側でファイル操作をキューイングする、SSH リモートファイルマネージャです。macOS
+ネイティブ (SwiftUI) と Windows (Avalonia UI) の 2 種類のクライアントがあり、どちらも同じ
+サーバーデーモンに対して同じ機能を提供します。
 
 ## 特徴
 
-- **macOS ネイティブ UI** — SwiftUI 製で、Finder のような操作感
+- **ネイティブ UI** — macOS は SwiftUI、Windows は Avalonia UI 製で、それぞれの OS に
+  馴染む操作感
 - **SSH** — 任意の Linux サーバーに SSH で接続
 - **Finder ライクな画面** — 並べ替え・検索・複数選択に対応したリスト表示
 - **サーバー側キュー** — クライアントが切断してもファイル操作は継続
@@ -19,16 +22,14 @@
 ## 構成
 
 ```
-┌─────────────────────────────────────────┐
-│       macOS クライアント (Swift)        │
-│  SwiftUI + SSH 経由のコマンド実行       │
-└─────────────────┬───────────────────────┘
-                  │ SSH
-                  ▼
-┌─────────────────────────────────────────┐
-│           Linux サーバー (Go)           │
-│  file-exploder デーモン + SQLite キュー │
-└─────────────────────────────────────────┘
+  macOS クライアント (Swift)       Windows クライアント (C#)
+  SwiftUI + SSH 経由の実行         Avalonia UI + SSH.NET
+              \                         /
+               \  SSH             SSH  /
+                \                     /
+                 v                   v
+              Linux サーバー (Go)
+              file-exploder デーモン + SQLite キュー
 ```
 
 ## インストール
@@ -121,6 +122,17 @@ cp -r file-exploder.app /Applications/
 
 または `Client/Package.swift` を Xcode で開いてビルドします（Command+B）。
 
+### クライアント (Windows)
+
+```powershell
+cd WindowsClient
+dotnet publish FileExploder\FileExploder.csproj -c Release -r win-x64 --self-contained false
+```
+
+`WindowsClient\FileExploder\bin\Release\net10.0\win-x64\publish\FileExploder.exe` に実行
+ファイルが生成されます。.NET 10 ランタイムがインストール済みの環境向けで、単体で動かす
+場合は `--self-contained true` を付けてください。
+
 ## 使い方
 
 ### SSH コマンド
@@ -167,6 +179,13 @@ file-exploder daemon
 先がすでに同じフォルダの場合や、フォルダを自分自身の中へ入れようとした場合は、ドロップが
 受け付けられません。
 
+### Windows クライアント
+
+操作方法は macOS クライアントと同じです。サーバー一覧・ファイル一覧・ドラッグ＆ドロップ・
+キューパネル・設定（隠しファイルの表示・更新間隔）まで、機能は一対一で対応しています。
+「ファイル」メニューの「新しいウィンドウ」(Ctrl+N) で複数ウィンドウを開けます。それぞれ
+別のサーバーに接続できますが、保存済みサーバーの一覧と設定はウィンドウ間で共有されます。
+
 ## 開発
 
 ### サーバー
@@ -177,12 +196,27 @@ go mod tidy
 go build -buildvcs=false -o file-exploder .
 ```
 
-### クライアント
+### クライアント (macOS)
 
 ```bash
 cd Client
 swift build
 ```
+
+### クライアント (Windows)
+
+.NET 10 SDK があれば、macOS/Linux 上でもビルド・テストできます（Windows 実行ファイルは
+生成できますが、当然そこでは実行できません）。
+
+```bash
+cd WindowsClient
+dotnet build FileExploder.slnx
+dotnet test FileExploder.slnx
+```
+
+`FileExploder.Tests` の一部（SSH 接続・SFTPService・ViewModel・UI のテスト）は、実際に
+ローカルの `sshd` と `file-exploder` デーモンに接続して検証します。両方が起動しているマシン
+でのみ実行してください。
 
 ## ライセンス
 
