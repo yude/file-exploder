@@ -72,6 +72,14 @@ class FileListViewModel: ObservableObject {
             try await sshConnection.testConnection()
             guard ssh === sshConnection else { return }
             await navigateTo(path: server.remoteRoot)
+            // navigateTo just awaited its own SSH round trip, during which a
+            // second, superseding connect(server:) call can have already run
+            // - disconnect()ing this one and swapping in its own ssh/sftp.
+            // Without re-checking here, this stale call would read
+            // errorMessage for whatever session is *now* current, and - if
+            // non-nil - tear down that unrelated, possibly healthy session
+            // and blame it for an error that was never its own.
+            guard ssh === sshConnection else { return }
             if let message = errorMessage {
                 disconnect()
                 errors.setListingError(message)
