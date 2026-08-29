@@ -452,6 +452,47 @@ func TestExecuteChmodRejectsSymlink(t *testing.T) {
 	}
 }
 
+// executeChmod moved from a separate os.Lstat then os.Chmod to an
+// O_NOFOLLOW open plus Fchmod, to close the TOCTOU gap between the two
+// (Chmod always follows the final path component - there is no portable
+// lchmod - so a symlink swapped in between the check and the call would be
+// chmod'd through to its target). This confirms the rewrite still actually
+// changes the mode of an ordinary file and directory.
+func TestExecuteChmodSetsTheRequestedModeOnOrdinaryTargets(t *testing.T) {
+	e := NewExecutor(nil)
+	tmpDir := t.TempDir()
+
+	file := filepath.Join(tmpDir, "file")
+	if err := os.WriteFile(file, []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Execute(&queue.Job{Type: queue.JobChmod, DstPath: file, Mode: "0600"}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("file mode = %o, want 0600", info.Mode().Perm())
+	}
+
+	dir := filepath.Join(tmpDir, "dir")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Execute(&queue.Job{Type: queue.JobChmod, DstPath: dir, Mode: "0750"}); err != nil {
+		t.Fatal(err)
+	}
+	info, err = os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0750 {
+		t.Fatalf("directory mode = %o, want 0750", info.Mode().Perm())
+	}
+}
+
 func TestExecuteRenameRejectsDirectoryIntoItself(t *testing.T) {
 	e := NewExecutor(nil)
 	tmpDir := t.TempDir()

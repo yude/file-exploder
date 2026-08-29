@@ -184,14 +184,24 @@ func (e *Executor) executeChmod(job *queue.Job) error {
 	if err != nil {
 		return err
 	}
-	info, err := os.Lstat(job.DstPath)
+
+	// A separate Lstat-then-Chmod has a TOCTOU gap: Chmod always follows the
+	// final path component (there is no portable lchmod), so a symlink
+	// swapped in at this name between the Lstat check and the Chmod call
+	// would be chmod'd through to whatever it points to instead of being
+	// refused. O_NOFOLLOW makes the open itself fail with ELOOP when the
+	// final component is a symlink, and Fchmod then acts on the exact inode
+	// that was opened - so the check and the mode change are atomic with
+	// respect to that path.
+	fd, err := unix.Open(job.DstPath, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return err
+		if errors.Is(err, unix.ELOOP) {
+			return fmt.Errorf("refusing to chmod a symbolic link: %s", job.DstPath)
+		}
+		return &os.PathError{Op: "open", Path: job.DstPath, Err: err}
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing to chmod a symbolic link: %s", job.DstPath)
-	}
-	return os.Chmod(job.DstPath, mode)
+	defer unix.Close(fd)
+	return unix.Fchmod(fd, uint32(mode))
 }
 
 func validatePaths(paths ...string) error {
