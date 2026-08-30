@@ -20,10 +20,10 @@ sealed class Program
         // wired here: Dispatcher.UIThread doesn't exist yet at this point,
         // only after AppBuilder sets up the platform - see App.axaml.cs.
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
-            CrashLog.Record("AppDomain.UnhandledException", e.ExceptionObject as Exception ?? new Exception(e.ExceptionObject?.ToString()));
+            DiagnosticLog.LogException("AppDomain.UnhandledException", e.ExceptionObject as Exception ?? new Exception(e.ExceptionObject?.ToString()));
         TaskScheduler.UnobservedTaskException += (_, e) =>
         {
-            CrashLog.Record("TaskScheduler.UnobservedTaskException", e.Exception);
+            DiagnosticLog.LogException("TaskScheduler.UnobservedTaskException", e.Exception);
             e.SetObserved();
         };
 

@@ -95,6 +95,17 @@ public sealed class UiSmokeTests : IDisposable
         Assert.True(grid!.IsVisible);
         Assert.Equal(2, grid.ItemsSource!.Cast<object>().Count());
 
+        // Not just IsVisible/ItemsSource: a DataGrid with no theme resources
+        // registered (Application.Styles was missing the
+        // Avalonia.Controls.DataGrid Fluent theme include, once) reports
+        // IsVisible=true and a correct, non-zero Bounds/ItemsSource with
+        // this same check, yet realizes zero rows and no headers - visually
+        // completely blank. Row realization needs an extra pump past the
+        // one that made IsVisible/ItemsSource correct.
+        Dispatcher.UIThread.RunJobs();
+        var rows = grid.GetVisualDescendants().OfType<DataGridRow>().ToList();
+        Assert.Equal(2, rows.Count);
+
         window.Close();
     });
 

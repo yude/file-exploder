@@ -13,14 +13,14 @@ namespace FileExploder.Tests;
 /// calling the handler directly - a direct call wouldn't exercise the same
 /// path a real click does).
 [Collection("Local SSH")]
-public sealed class CrashLogTests : IDisposable
+public sealed class DiagnosticLogTests : IDisposable
 {
     private readonly string _logFile = Path.GetTempFileName();
 
-    public CrashLogTests()
+    public DiagnosticLogTests()
     {
         File.Delete(_logFile); // the log should tolerate a file that doesn't exist yet
-        CrashLog.UseFileForTesting(_logFile);
+        DiagnosticLog.UseFileForTesting(_logFile);
     }
 
     public void Dispose()

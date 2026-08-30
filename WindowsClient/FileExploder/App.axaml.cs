@@ -23,7 +23,7 @@ public partial class App : Application
         // user might still be relying on for an unrelated tab/connection.
         Dispatcher.UIThread.UnhandledException += (_, e) =>
         {
-            CrashLog.Record("Dispatcher.UIThread.UnhandledException", e.Exception);
+            DiagnosticLog.LogException("Dispatcher.UIThread.UnhandledException", e.Exception);
             e.Handled = true;
         };
 
