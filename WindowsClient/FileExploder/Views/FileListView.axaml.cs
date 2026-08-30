@@ -4,6 +4,7 @@ using Avalonia.Controls;
 using Avalonia.Data.Converters;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
+using Avalonia.Interactivity;
 using Avalonia.Media;
 using FileExploder.Models;
 using FileExploder.Utilities;
@@ -30,6 +31,12 @@ public partial class FileListView : UserControl
 
     internal DataGrid FilesGridForTesting => FilesGrid;
 
+    /// Set the first time a drag actually starts, so a test can tell
+    /// "the press was observed and the threshold was crossed" apart from
+    /// "nothing happened" - DoDragDropAsync itself takes over the pointer
+    /// and leaves no other observable trace in a headless run.
+    internal bool DragWasInitiatedForTesting { get; private set; }
+
     // Column sorting is handled entirely here, not by the DataGrid's own
     // built-in sort machinery: re-deriving the sorted list ourselves from
     // FilesViewModel.Files + the search text + whichever column the user
@@ -46,10 +53,8 @@ public partial class FileListView : UserControl
     // the grid's own handling is exactly what broke selection and
     // double-click in the macOS client the first time this was attempted
     // (see commit "restore row selection and double-click in the file
-    // list"). This could not be interactively verified in this environment
-    // (no Windows/GUI display) - it is built to the same "row, not cell,
-    // and never Handled on press" rule that fixed it there, but treat it as
-    // unverified until it's actually exercised on Windows.
+    // list"). The flip side of that same coin is how the press has to be
+    // subscribed to at all: see the comment in OnLoadingRow.
     private RemoteFile? _dragCandidate;
     private Point? _dragStartPoint;
     private PointerPressedEventArgs? _dragPressArgs;
@@ -247,7 +252,17 @@ public partial class FileListView : UserControl
     private void OnLoadingRow(object? sender, DataGridRowEventArgs e)
     {
         var row = e.Row;
-        row.PointerPressed += OnRowPointerPressed;
+        // AddHandler with handledEventsToo, not `row.PointerPressed +=`: the
+        // DataGrid marks the press handled for its own row selection before
+        // it ever reaches the row, so a plain subscription never fires at
+        // all - verified directly. That one dead subscription is what broke
+        // BOTH double-click-to-open and drag-to-move, since both hang off
+        // it. Bubble (rather than Tunnel) so the grid still does its
+        // selection first and this only observes afterward, which is what
+        // the "not marking e.Handled" note in OnRowPointerPressed is about.
+        // PointerMoved/PointerReleased are not handled by the grid and
+        // arrive fine on a plain subscription.
+        row.AddHandler(InputElement.PointerPressedEvent, OnRowPointerPressed, RoutingStrategies.Bubble, handledEventsToo: true);
         row.PointerMoved += OnRowPointerMoved;
         row.PointerReleased += OnRowPointerReleased;
         DragDrop.SetAllowDrop(row, true);
@@ -263,7 +278,7 @@ public partial class FileListView : UserControl
     private void OnUnloadingRow(object? sender, DataGridRowEventArgs e)
     {
         var row = e.Row;
-        row.PointerPressed -= OnRowPointerPressed;
+        row.RemoveHandler(InputElement.PointerPressedEvent, OnRowPointerPressed);
         row.PointerMoved -= OnRowPointerMoved;
         row.PointerReleased -= OnRowPointerReleased;
         row.RemoveHandler(DragDrop.DragOverEvent, OnRowDragOver);
@@ -323,6 +338,7 @@ public partial class FileListView : UserControl
         var pressArgs = _dragPressArgs;
         ResetDragTracking();
 
+        DragWasInitiatedForTesting = true;
         var transfer = new DataTransfer();
         transfer.Add(DataTransferItem.Create(RemoteFileDrag.Format, file.Path));
         await DragDrop.DoDragDropAsync(pressArgs, transfer, DragDropEffects.Move);
