@@ -81,7 +81,7 @@
                     </dg:DataGridTemplateColumn>
                     <dg:DataGridTextColumn Header="サイズ" Width="100" Binding="{ReflectionBinding FormattedSize}" SortMemberPath="Size" />
                     <dg:DataGridTextColumn Header="更新日時" Width="160" Binding="{ReflectionBinding FormattedDate}" SortMemberPath="ModificationDate" />
-                    <dg:DataGridTextColumn Header="権限" Width="100" Binding="{ReflectionBinding SymbolicPermissions}" SortMemberPath="SymbolicPermissions" FontFamily="monospace" />
+                    <dg:DataGridTextColumn Header="権限" Width="100" Binding="{ReflectionBinding SymbolicPermissions}" SortMemberPath="SymbolicPermissions" FontFamily="Consolas,Menlo,Courier New,monospace" />
                 </dg:DataGrid.Columns>
             </dg:DataGrid>
         </Grid>
