@@ -34,17 +34,6 @@
                     </Grid>
                 </DataTemplate>
             </ListBox.ItemTemplate>
-            <ListBox.Styles>
-                <Style Selector="ListBoxItem">
-                    <Setter Property="ContextMenu">
-                        <ContextMenu>
-                            <MenuItem Header="編集" Click="OnEditServerClick" />
-                            <Separator />
-                            <MenuItem Header="削除" Click="OnDeleteServerClick" />
-                        </ContextMenu>
-                    </Setter>
-                </Style>
-            </ListBox.Styles>
         </ListBox>
 
         <StackPanel Grid.Row="3" Margin="12,8" Orientation="Horizontal" Spacing="8"

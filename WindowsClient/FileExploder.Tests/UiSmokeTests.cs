@@ -82,7 +82,7 @@ public sealed class UiSmokeTests : IDisposable
         // method is itself suspended. Driving the dispatcher manually while
         // polling for completion sidesteps that entirely.
         var connectTask = window.ConnectionViewModel.ConnectAsync(server, window.FileListViewModel);
-        PumpUntilCompleted(connectTask, TimeSpan.FromSeconds(15));
+        TestUiHelpers.PumpUntilCompleted(connectTask, TimeSpan.FromSeconds(15));
 
         Assert.True(window.FileListViewModel.HasConnection, window.FileListViewModel.ErrorMessage);
         Assert.Contains(window.FileListViewModel.Files, f => f.Name == "hello.txt");
@@ -126,7 +126,7 @@ public sealed class UiSmokeTests : IDisposable
             KeyPath = _fixture.PrivateKeyPath,
             RemoteRoot = _scratchDir,
         };
-        PumpUntilCompleted(window.ConnectionViewModel.ConnectAsync(server, window.FileListViewModel), TimeSpan.FromSeconds(15));
+        TestUiHelpers.PumpUntilCompleted(window.ConnectionViewModel.ConnectAsync(server, window.FileListViewModel), TimeSpan.FromSeconds(15));
 
         var grid = window.FileListViewForTesting.FilesGridForTesting;
         var toSelect = grid.ItemsSource!.Cast<RemoteFile>().First(f => f.Name == "a.txt");
@@ -136,7 +136,7 @@ public sealed class UiSmokeTests : IDisposable
 
         // A fresh ListDirectoryAsync call, exactly like a real auto-refresh
         // tick: brand new RemoteFile instances for the same paths.
-        PumpUntilCompleted(window.FileListViewModel.RefreshAsync(), TimeSpan.FromSeconds(15));
+        TestUiHelpers.PumpUntilCompleted(window.FileListViewModel.RefreshAsync(), TimeSpan.FromSeconds(15));
 
         var stillSelected = Assert.Single(grid.SelectedItems.Cast<RemoteFile>());
         Assert.Equal("a.txt", stillSelected.Name);
@@ -219,23 +219,6 @@ public sealed class UiSmokeTests : IDisposable
             File.Delete(settingsFile);
         }
     });
-
-    private static void PumpUntilCompleted(Task task, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (!task.IsCompleted)
-        {
-            Dispatcher.UIThread.RunJobs();
-            if (DateTime.UtcNow > deadline)
-            {
-                throw new TimeoutException($"Task did not complete within {timeout}.");
-            }
-            Thread.Sleep(10);
-        }
-        // Surfaces the real exception (with its own stack trace) instead of
-        // an AggregateException wrapping it.
-        task.GetAwaiter().GetResult();
-    }
 
     private static T? FindDescendant<T>(Control root, string name) where T : Control =>
         root.GetVisualDescendants().OfType<T>().FirstOrDefault(c => c.Name == name);

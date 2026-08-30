@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     internal ConnectionViewModel ConnectionViewModel => _connectionVM;
     internal FileListViewModel FileListViewModel => _fileListVM;
     internal FileListView FileListViewForTesting => FileList;
+    internal SidebarView SidebarForTesting => Sidebar;
 
     // The generated fields for these two menu items are otherwise private,
     // and (unlike the always-visible menu bar itself) their containing

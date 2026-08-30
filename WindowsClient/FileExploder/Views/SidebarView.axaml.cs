@@ -25,6 +25,8 @@ public partial class SidebarView : UserControl
     private ConnectionViewModel _connectionVM = null!;
     private FileListViewModel _fileListVM = null!;
 
+    internal ListBox ServerListForTesting => ServerList;
+
     public SidebarView()
     {
         InitializeComponent();
@@ -36,6 +38,49 @@ public partial class SidebarView : UserControl
                 await _connectionVM.ConnectAsync(server, _fileListVM);
             }
         };
+
+        // Built per-container, not via a shared <Style> Setter: a Setter's
+        // value is one XAML-parsed instance reused for every element the
+        // style matches, and a ContextMenu (a Control, so it can only ever
+        // have one parent) silently fails to reopen once RefreshRows()
+        // rebuilds the list's containers - which happens on every
+        // Servers/ConnectedServer change, connecting included. That is
+        // exactly the shape of "right-click stops working once connected"
+        // this replaces.
+        ServerList.ContainerPrepared += OnContainerPrepared;
+        ServerList.ContainerClearing += OnContainerClearing;
+    }
+
+    private void OnContainerPrepared(object? sender, ContainerPreparedEventArgs e)
+    {
+        var container = e.Container;
+        var menu = new ContextMenu();
+        menu.Opening += (_, _) => PopulateContextMenu(menu, container);
+        container.ContextMenu = menu;
+    }
+
+    private void OnContainerClearing(object? sender, ContainerClearingEventArgs e) =>
+        e.Container.ContextMenu = null;
+
+    internal void PopulateContextMenuForTesting(ContextMenu menu, Control container) => PopulateContextMenu(menu, container);
+
+    private void PopulateContextMenu(ContextMenu menu, Control container)
+    {
+        menu.Items.Clear();
+        if (container.DataContext is not ServerRowItem row)
+        {
+            return;
+        }
+        menu.Items.Add(MenuAction("編集", () => _ = OpenEditorAsync(row.Server)));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MenuAction("削除", () => _ = DeleteServerAsync(row.Server)));
+    }
+
+    private static MenuItem MenuAction(string header, Action action)
+    {
+        var item = new MenuItem { Header = header };
+        item.Click += (_, _) => action();
+        return item;
     }
 
     public void Attach(ConnectionViewModel connectionVM, FileListViewModel fileListVM)
@@ -72,21 +117,12 @@ public partial class SidebarView : UserControl
         await ConnectionWindow.ShowAsync(owner, _connectionVM, _fileListVM, server);
     }
 
-    private async void OnEditServerClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private async Task DeleteServerAsync(Server server)
     {
-        if (RowFor(sender) is { } row)
-        {
-            await OpenEditorAsync(row.Server);
-        }
-    }
-
-    private async void OnDeleteServerClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-    {
-        if (RowFor(sender) is not { } row || TopLevel.GetTopLevel(this) is not Window owner)
+        if (TopLevel.GetTopLevel(this) is not Window owner)
         {
             return;
         }
-        var server = row.Server;
         var confirmed = await ConfirmWindow.ShowAsync(
             owner,
             "サーバー設定を削除しますか？",
@@ -102,10 +138,4 @@ public partial class SidebarView : UserControl
         }
         _connectionVM.DeleteServer(server);
     }
-
-    /// MenuItem.Click bubbles from the context menu, which is attached per
-    /// ListBoxItem via a style setter (see the .axaml) - DataContext at that
-    /// point is the ServerRowItem the menu was opened on.
-    private static ServerRowItem? RowFor(object? sender) =>
-        (sender as Control)?.DataContext as ServerRowItem;
 }
