@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using Avalonia.Controls;
 using Avalonia.Data.Converters;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Media;
 using FileExploder.Models;
 using FileExploder.ViewModels;
@@ -31,22 +33,18 @@ public partial class SidebarView : UserControl
     {
         InitializeComponent();
         AddButton.Click += async (_, _) => await OpenEditorAsync(null);
-        ServerList.SelectionChanged += async (_, e) =>
-        {
-            if (e.AddedItems.Count > 0 && e.AddedItems[0] is ServerRowItem { Server: var server })
-            {
-                await _connectionVM.ConnectAsync(server, _fileListVM);
-            }
-        };
 
-        // Built per-container, not via a shared <Style> Setter: a Setter's
-        // value is one XAML-parsed instance reused for every element the
-        // style matches, and a ContextMenu (a Control, so it can only ever
-        // have one parent) silently fails to reopen once RefreshRows()
-        // rebuilds the list's containers - which happens on every
-        // Servers/ConnectedServer change, connecting included. That is
-        // exactly the shape of "right-click stops working once connected"
-        // this replaces.
+        // Connecting is driven by an explicit left-click on a row, NOT by
+        // ListBox.SelectionChanged. Selection changes for reasons that are
+        // not "the user asked to connect to this server": a right-click
+        // selects the row before opening its context menu, and replacing
+        // ItemsSource (which RefreshRows does on every Servers/
+        // ConnectedServer change) raises it too. Driving ConnectAsync from
+        // selection meant right-clicking a row kicked off a connection,
+        // whose own IsConnecting/ConnectedServer updates immediately
+        // rebuilt the list underneath the context menu that was trying to
+        // open - so the menu never appeared, and editing a server became
+        // impossible. Verified by direct repro before and after this change.
         ServerList.ContainerPrepared += OnContainerPrepared;
         ServerList.ContainerClearing += OnContainerClearing;
     }
@@ -57,10 +55,26 @@ public partial class SidebarView : UserControl
         var menu = new ContextMenu();
         menu.Opening += (_, _) => PopulateContextMenu(menu, container);
         container.ContextMenu = menu;
+        container.AddHandler(PointerReleasedEvent, OnRowPointerReleased, RoutingStrategies.Tunnel);
     }
 
-    private void OnContainerClearing(object? sender, ContainerClearingEventArgs e) =>
+    private void OnRowPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (e.InitialPressMouseButton != MouseButton.Left)
+        {
+            return;
+        }
+        if ((sender as Control)?.DataContext is ServerRowItem row)
+        {
+            _ = _connectionVM.ConnectAsync(row.Server, _fileListVM);
+        }
+    }
+
+    private void OnContainerClearing(object? sender, ContainerClearingEventArgs e)
+    {
         e.Container.ContextMenu = null;
+        e.Container.RemoveHandler(PointerReleasedEvent, OnRowPointerReleased);
+    }
 
     internal void PopulateContextMenuForTesting(ContextMenu menu, Control container) => PopulateContextMenu(menu, container);
 

@@ -1,4 +1,7 @@
+using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Headless;
+using Avalonia.Input;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using FileExploder.Models;
@@ -112,6 +115,99 @@ public sealed class SidebarViewTests : IDisposable
         var editor = window.OwnedWindows.OfType<ConnectionWindow>().Single();
         Assert.Equal("サーバーの編集", editor.Title);
         editor.Close();
+        window.Close();
+    });
+
+    /// The two tests above check the ContextMenu object graph (distinct
+    /// instances, correct DataContext resolution) but neither drives an
+    /// actual right-click through Avalonia's real input pipeline - this
+    /// does, via the headless platform's synthetic pointer input, which is
+    /// as close as this sandbox gets to what a real right-click on Windows
+    /// does.
+    [Fact]
+    public void RightClickingAServerRowActuallyOpensItsContextMenu() => HeadlessApp.RunOnUiThread(() =>
+    {
+        var window = new MainWindow();
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+
+        var serverA = new Server { Name = "a", Hostname = "example.test", Username = "someone" };
+        var serverB = new Server
+        {
+            Name = "b",
+            Hostname = "localhost",
+            Port = (ushort)_fixture.Port,
+            Username = _fixture.Username,
+            KeyPath = _fixture.PrivateKeyPath,
+        };
+        window.ConnectionViewModel.AddServer(serverA);
+        window.ConnectionViewModel.AddServer(serverB);
+        Dispatcher.UIThread.RunJobs();
+
+        // Connecting is exactly the "once connected" condition the report
+        // describes - and the ItemsSource rebuild it triggers is what broke
+        // right-click with the old shared-Style ContextMenu.
+        TestUiHelpers.PumpUntilCompleted(window.ConnectionViewModel.ConnectAsync(serverB, window.FileListViewModel), TimeSpan.FromSeconds(15));
+        Dispatcher.UIThread.RunJobs();
+
+        var listBox = window.SidebarForTesting.ServerListForTesting;
+        var container = listBox.GetVisualDescendants().OfType<ListBoxItem>()
+            .Single(c => c.DataContext is ServerRowItem row && row.Server.Name == "a");
+        var center = container.TranslatePoint(new Point(container.Bounds.Width / 2, container.Bounds.Height / 2), window)
+            ?? throw new InvalidOperationException("could not translate the row's center into window coordinates");
+
+        window.MouseDown(center, MouseButton.Right);
+        window.MouseUp(center, MouseButton.Right);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.True(container.ContextMenu!.IsOpen, "right-clicking the row did not open its context menu");
+
+        window.Close();
+    });
+
+    /// The flip side of the fix: right-click must NOT connect (that is what
+    /// broke the context menu), but an ordinary left-click still must.
+    [Fact]
+    public void LeftClickingAServerRowConnectsAndRightClickingDoesNot() => HeadlessApp.RunOnUiThread(() =>
+    {
+        var window = new MainWindow();
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+
+        var server = new Server
+        {
+            Name = "a",
+            Hostname = "localhost",
+            Port = (ushort)_fixture.Port,
+            Username = _fixture.Username,
+            KeyPath = _fixture.PrivateKeyPath,
+        };
+        window.ConnectionViewModel.AddServer(server);
+        Dispatcher.UIThread.RunJobs();
+
+        var listBox = window.SidebarForTesting.ServerListForTesting;
+        var container = listBox.GetVisualDescendants().OfType<ListBoxItem>().Single();
+        var center = container.TranslatePoint(new Point(container.Bounds.Width / 2, container.Bounds.Height / 2), window)!.Value;
+
+        window.MouseDown(center, MouseButton.Right);
+        window.MouseUp(center, MouseButton.Right);
+        Dispatcher.UIThread.RunJobs();
+        Assert.Null(window.ConnectionViewModel.ActiveServerId);
+        container.ContextMenu!.Close();
+        Dispatcher.UIThread.RunJobs();
+
+        window.MouseDown(center, MouseButton.Left);
+        window.MouseUp(center, MouseButton.Left);
+        // ConnectAsync is started, not awaited, by the click handler - pump
+        // until it settles rather than asserting on a half-finished connect.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+        while (window.ConnectionViewModel.ConnectedServer is null && DateTime.UtcNow < deadline)
+        {
+            Dispatcher.UIThread.RunJobs();
+            Thread.Sleep(10);
+        }
+        Assert.Equal(server.Id, window.ConnectionViewModel.ConnectedServer?.Id);
+
         window.Close();
     });
 
