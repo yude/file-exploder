@@ -88,6 +88,20 @@ public sealed partial class FileListViewModel : ViewModelBase, IDisposable
                 return;
             }
             await NavigateToAsync(server.RemoteRoot);
+            // NavigateToAsync just awaited its own SSH round trip, during
+            // which a second, superseding ConnectAsync call can have already
+            // run - Disconnect()ing this one and swapping in its own
+            // _ssh/Sftp. Without re-checking here, this stale call would read
+            // ErrorMessage for whatever session is *now* current, and - if
+            // non-null - tear down that unrelated, possibly healthy session
+            // and blame it for an error that was never its own.
+            // _navigationGeneration already protects Files/CurrentPath from
+            // the same race inside LoadPathAsync; this block sits just
+            // outside it.
+            if (_ssh != sshConnection)
+            {
+                return;
+            }
             if (ErrorMessage is { } message)
             {
                 Disconnect();
