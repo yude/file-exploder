@@ -11,8 +11,15 @@ class SSHConnection: ObservableObject, @unchecked Sendable {
     private var activeProcesses: [Process] = []
     private var invalidated = false
 
+    /// This connection's OpenSSH multiplexing socket, so its commands share
+    /// one authenticated connection instead of each opening its own (see
+    /// SSHControlSocket). Nil when multiplexing is unavailable, in which case
+    /// every command connects on its own exactly as it always did.
+    private let controlPath: String?
+
     init(server: Server) {
         self.server = server
+        self.controlPath = SSHControlSocket.prepare()
     }
 
     func terminateAll() {
@@ -25,6 +32,34 @@ class SSHConnection: ObservableObject, @unchecked Sendable {
         for process in processes where process.isRunning {
             process.terminate()
         }
+
+        closeControlMaster()
+    }
+
+    /// Shuts the multiplexed master down instead of leaving it to time out on
+    /// its own persist window. Terminating the command processes above does
+    /// not touch it - it is a separate, still-authenticated connection to the
+    /// host - and closing a window is a deliberate "stop talking to this
+    /// server", not just "stop what is in flight".
+    ///
+    /// Best-effort and non-blocking. If the socket is already gone the request
+    /// fails immediately and harmlessly, and if this never runs at all - the
+    /// app was killed - ControlPersist still retires the master on its own.
+    private func closeControlMaster() {
+        guard let controlPath else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = [
+            "-p", String(server.port),
+            "-o", "ControlPath=\(controlPath)",
+            "-O", "exit",
+            "\(server.username)@\(server.hostname)",
+        ]
+        // Not a Pipe: nothing reads these, and a full pipe would wedge the
+        // child. There is no output worth keeping either way.
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
     }
 
     /// The default stdout cap, sized for an ordinary control command's
@@ -225,6 +260,20 @@ class SSHConnection: ObservableObject, @unchecked Sendable {
             "-o", "ServerAliveCountMax=3",
             "-o", "LogLevel=ERROR",
         ]
+
+        if let controlPath {
+            // ControlMaster=auto, not =yes: when no master is there - the
+            // first command of a session, or one whose master has since been
+            // retired by ControlPersist expiring or by ServerAliveCountMax
+            // giving up on a dropped link - this invocation quietly opens one
+            // rather than failing. A lost master costs a handshake, never a
+            // command.
+            arguments.append(contentsOf: [
+                "-o", "ControlMaster=auto",
+                "-o", "ControlPath=\(controlPath)",
+                "-o", "ControlPersist=\(SSHControlSocket.persistSeconds)",
+            ])
+        }
 
         if let keyPath = server.keyPath, !keyPath.isEmpty, server.authType == .sshKey {
             arguments.append(contentsOf: ["-i", keyPath])

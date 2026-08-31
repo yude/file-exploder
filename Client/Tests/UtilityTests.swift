@@ -379,3 +379,57 @@ final class FailableDecodableTests: XCTestCase {
         XCTAssertEqual(jobs.first?.id, "1")
     }
 }
+
+/// The control-socket rules decide whether multiplexing is used at all. They
+/// have to be right without trying it: OpenSSH refuses to connect at all when
+/// handed a ControlPath it dislikes, so a bad path here would break every
+/// command rather than merely leave them unaccelerated.
+final class SSHControlSocketTests: XCTestCase {
+    func testJoinsDirectoryAndName() {
+        XCTAssertEqual(
+            SSHControlSocket.path(inDirectory: "/tmp/fe", name: "abc123"),
+            "/tmp/fe/abc123"
+        )
+    }
+
+    func testToleratesATrailingSeparatorOnTheDirectory() {
+        XCTAssertEqual(
+            SSHControlSocket.path(inDirectory: "/tmp/fe/", name: "abc123"),
+            "/tmp/fe/abc123"
+        )
+    }
+
+    /// A unix-domain socket path is capped at 104 bytes on macOS, and ssh
+    /// treats an over-long ControlPath as a fatal error rather than falling
+    /// back - so this must decline instead of handing the path over.
+    func testDeclinesAPathTooLongForASocket() {
+        let deepDirectory = "/" + String(repeating: "d", count: SSHControlSocket.maxPathLength)
+        XCTAssertNil(SSHControlSocket.path(inDirectory: deepDirectory, name: "abc123"))
+    }
+
+    func testAcceptsAPathJustInsideTheLimit() {
+        // One byte short of the limit once the separator and name are added.
+        let name = "abc123"
+        let directoryLength = SSHControlSocket.maxPathLength - name.utf8.count - 2
+        let directory = "/" + String(repeating: "d", count: directoryLength - 1)
+        let path = SSHControlSocket.path(inDirectory: directory, name: name)
+        XCTAssertNotNil(path)
+        XCTAssertLessThan(path?.utf8.count ?? Int.max, SSHControlSocket.maxPathLength)
+    }
+
+    /// ssh expands %-tokens inside a ControlPath, so a literal one would put
+    /// the socket somewhere other than where this code thinks it is.
+    func testDeclinesAPathContainingAnSshExpansionToken() {
+        XCTAssertNil(SSHControlSocket.path(inDirectory: "/tmp/100%full", name: "abc123"))
+    }
+
+    /// Names are what keeps two connections from sharing a socket - and two
+    /// servers sharing one would send a host's commands to the wrong machine.
+    func testNamesAreShortHexAndDoNotRepeat() {
+        let first = SSHControlSocket.newName()
+        let second = SSHControlSocket.newName()
+        XCTAssertEqual(first.count, 16)
+        XCTAssertNotEqual(first, second)
+        XCTAssertTrue(first.allSatisfy { $0.isHexDigit && !$0.isUppercase })
+    }
+}
