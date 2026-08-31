@@ -85,10 +85,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	logger.Println("Daemon started, processing queue every 1s")
+	logger.Printf("Daemon started, processing queue every %s", pollInterval)
 
 	for {
 		select {
@@ -96,10 +96,30 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			logger.Println("Shutdown signal received, stopping")
 			return nil
 		case <-ticker.C:
-			processPendingJobs(ctx, q, exec.Execute, logger, cfg.JobTimeout, busy)
+			// Keep going while a pass is still finding work to start. Each
+			// pass reads the pending list once, so anything queued *while*
+			// that pass was busy executing - which is exactly what a bulk
+			// operation looks like, one `add` per file racing the daemon -
+			// would otherwise sit out a full tick it has nothing to do with.
+			// A pass reports true only when it actually started a job, so
+			// this cannot spin: every extra round is one the queue paid for.
+			for processPendingJobs(ctx, q, exec.Execute, logger, cfg.JobTimeout, busy) {
+				if ctx.Err() != nil {
+					break
+				}
+			}
 		}
 	}
 }
+
+// pollInterval is how long the daemon waits between passes over the queue
+// when the last one found nothing to do. It is the floor on how long a
+// freshly queued operation waits before anything looks at it, and the clients
+// sit on a spinner for exactly that long on every rename, delete and mkdir -
+// so it is worth keeping short. One idle pass is a single indexed SQLite
+// SELECT that returns no rows, measured at ~30us: four of them a second is
+// not a cost worth trading that latency for.
+const pollInterval = 250 * time.Millisecond
 
 // maxLogBytes bounds each queue.log generation. One previous generation is
 // retained for diagnosis.
@@ -198,20 +218,26 @@ func (w *rotatingLogWriter) Close() error {
 	return err
 }
 
-func processPendingJobs(ctx context.Context, q queue.Queue, execute func(*queue.Job) error, logger *log.Logger, timeout time.Duration, busy *busyPaths) {
+// processPendingJobs runs one pass over the pending queue, reporting whether
+// it started any job at all - so the caller can tell a pass that drained real
+// work (and may have more waiting behind it) from one that found the queue
+// idle. A job left pending because it overlaps a timed-out job's paths, or
+// one another writer claimed first, is not work this pass did.
+func processPendingJobs(ctx context.Context, q queue.Queue, execute func(*queue.Job) error, logger *log.Logger, timeout time.Duration, busy *busyPaths) bool {
 	jobs, err := q.GetPendingJobs()
 	if err != nil {
 		logger.Printf("Error fetching pending jobs: %v", err)
-		return
+		return false
 	}
 
+	startedAny := false
 	for _, job := range jobs {
 		// Stop claiming work as soon as a shutdown is requested. The job
 		// already in flight still runs to completion; the rest stay pending
 		// for the next start instead of being reset to failed.
 		if ctx.Err() != nil {
 			logger.Printf("Shutdown requested, leaving job %s pending", job.ID)
-			return
+			return startedAny
 		}
 
 		// A job a previous tick gave up on for exceeding its time budget may
@@ -237,8 +263,10 @@ func processPendingJobs(ctx context.Context, q queue.Queue, execute func(*queue.
 			continue
 		}
 
+		startedAny = true
 		runJobWithTimeout(q, execute, job, timeout, logger, busy)
 	}
+	return startedAny
 }
 
 // runJobWithTimeout runs execute(job) on its own goroutine and gives up on it

@@ -326,3 +326,47 @@ func TestRotatingLogWriterRecoversWhenAReopenFailed(t *testing.T) {
 		t.Fatal("writing after Close unexpectedly succeeded")
 	}
 }
+
+// The daemon loop keeps making passes while one is still reporting work, so
+// that a job queued during a long-running one does not sit out a full tick.
+// That hinges entirely on what a pass reports: a pass that started something
+// must say so, and an idle pass - or one that only *looked* at jobs it could
+// not claim - must not, or the loop would spin.
+func TestProcessPendingJobsReportsWhetherItStartedAnything(t *testing.T) {
+	q := newTestJobQueue(t)
+	ctx := context.Background()
+	execute := func(*queue.Job) error { return nil }
+
+	if processPendingJobs(ctx, q, execute, discardLogger, time.Second, newBusyPaths()) {
+		t.Fatal("an empty queue reported work; the daemon loop would spin on it")
+	}
+
+	if err := q.AddJob(&queue.Job{
+		ID: "real", Type: queue.JobDelete, SrcPath: "/data/thing",
+		Status: queue.StatusPending, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !processPendingJobs(ctx, q, execute, discardLogger, time.Second, newBusyPaths()) {
+		t.Fatal("a pass that ran a job reported no work")
+	}
+	// ...and the now-drained queue goes back to reporting nothing.
+	if processPendingJobs(ctx, q, execute, discardLogger, time.Second, newBusyPaths()) {
+		t.Fatal("a drained queue reported work")
+	}
+
+	// A job held back because it overlaps an abandoned job's paths is not work
+	// this pass did: reporting it as such would have the loop re-read the same
+	// unclaimable job as fast as it can until the holder finally releases it.
+	if err := q.AddJob(&queue.Job{
+		ID: "blocked", Type: queue.JobDelete, SrcPath: "/data/held",
+		Status: queue.StatusPending, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	busy := newBusyPaths()
+	busy.hold("elsewhere", []string{"/data/held"})
+	if processPendingJobs(ctx, q, execute, discardLogger, time.Second, busy) {
+		t.Fatal("a pass that only skipped a blocked job reported work")
+	}
+}
