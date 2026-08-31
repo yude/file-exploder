@@ -89,6 +89,58 @@ public sealed class SshConnectionTests(LocalSshFixture fixture)
         }
     }
 
+    /// A network blip must not retire the window. The macOS client gets this
+    /// for free by spawning a fresh `ssh` per command; holding one persistent
+    /// session has to re-establish it deliberately.
+    [Fact]
+    public async Task RecoversFromADroppedSession()
+    {
+        var connection = NewConnection();
+        await connection.TestConnectionAsync();
+
+        // Kill the sshd process serving this session from the inside - what a
+        // dropped link looks like to the client - and confirm it really died.
+        await Assert.ThrowsAnyAsync<Exception>(() => connection.ExecuteCommandAsync("kill -9 $PPID"));
+
+        // SSH.NET notices a dropped transport asynchronously, so a command
+        // issued immediately after can still be dispatched into the dying
+        // session and fail on its way out. That window is deliberately not
+        // papered over by retrying a command that already left - `add` is not
+        // idempotent - so allow a short run of attempts here, the same
+        // tolerance SftpService's poll loops give a single blip. Before
+        // reconnection existed *every* attempt failed, permanently, so this
+        // still discriminates completely.
+        string? output = null;
+        for (var attempt = 0; attempt < 5 && output is null; attempt++)
+        {
+            try
+            {
+                output = await connection.ExecuteCommandAsync("echo recovered");
+            }
+            catch (Exception)
+            {
+                await Task.Delay(200);
+            }
+        }
+
+        Assert.NotNull(output);
+        Assert.Contains("recovered", output);
+    }
+
+    /// Reconnection must not turn TerminateAll into something a later command
+    /// can undo by quietly opening a fresh session behind it.
+    [Fact]
+    public async Task TerminateAllStopsFurtherCommandsEvenAfterASessionDrops()
+    {
+        var connection = NewConnection();
+        await connection.TestConnectionAsync();
+
+        await Assert.ThrowsAnyAsync<Exception>(() => connection.ExecuteCommandAsync("kill -9 $PPID"));
+        connection.TerminateAll();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => connection.ExecuteCommandAsync("echo should-not-run"));
+    }
+
     [Fact]
     public async Task TerminateAllStopsFurtherCommands()
     {

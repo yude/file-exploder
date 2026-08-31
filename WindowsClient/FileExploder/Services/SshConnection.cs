@@ -38,7 +38,16 @@ public sealed partial class SshConnection : ObservableObject
     private readonly Lock _gate = new();
     private SshClient? _client;
     private bool _invalidated;
+    /// Whether a session was ever established. Separates "this connection has
+    /// not been opened yet, or has been retired" - neither of which a command
+    /// may quietly open a session for - from "it was open and the session
+    /// died", which EnsureConnectedAsync is allowed to repair.
+    private bool _everConnected;
     private readonly HashSet<SshCommand> _activeCommands = [];
+    /// Serializes reconnection so a burst of commands that all find the
+    /// session dead - a bulk operation's concurrent job lookups, say -
+    /// re-establishes it once between them instead of once each.
+    private readonly SemaphoreSlim _reconnectGate = new(1, 1);
 
     [ObservableProperty]
     public partial bool IsConnected { get; set; }
@@ -160,6 +169,87 @@ public sealed partial class SshConnection : ObservableObject
                 throw new OperationCanceledException();
             }
             _client = client;
+            _everConnected = true;
+        }
+    }
+
+    /// A dropped session is not the end of the connection.
+    ///
+    /// The macOS client spawns a fresh `ssh` per command, so a network blip
+    /// costs it one failed command and the next one reconnects by itself.
+    /// Holding a single persistent session buys back a great deal of latency
+    /// (see the class comment) but gave that recovery up: once the session
+    /// died, every later command failed with "Client not connected" for the
+    /// life of the window. SftpService's poll loops tolerate three
+    /// *consecutive* failures precisely so a blip cannot sink an operation -
+    /// against a permanently dead session they burn through that in about a
+    /// second and report queued work as failed while the server is still
+    /// happily running it.
+    ///
+    /// So re-establish the session when it is found dead. Deliberately only
+    /// ever *before* a command is sent, and never as a retry after one
+    /// failed: `add` is not idempotent, and a command that failed after
+    /// reaching the server would be queued a second time by a retry. Checking
+    /// first means the command provably never ran.
+    private async Task<SshClient> EnsureConnectedAsync(CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            if (_invalidated || !_everConnected)
+            {
+                throw new OperationCanceledException();
+            }
+            if (_client is { IsConnected: true } live)
+            {
+                return live;
+            }
+        }
+
+        await _reconnectGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            SshClient? dead;
+            lock (_gate)
+            {
+                if (_invalidated)
+                {
+                    throw new OperationCanceledException();
+                }
+                if (_client is { IsConnected: true } reconnected)
+                {
+                    // Another command waiting on this same gate did the work.
+                    return reconnected;
+                }
+                // Null when an earlier reconnect attempt already cleared it
+                // and then failed to connect; _everConnected keeps this path
+                // open so a later command tries again rather than reporting
+                // the connection as never-opened.
+                dead = _client;
+                _client = null;
+            }
+
+            if (dead is not null)
+            {
+                try
+                {
+                    dead.Dispose();
+                }
+                catch (Exception)
+                {
+                    // Best-effort: the session is gone regardless.
+                }
+            }
+
+            await ConnectAsync(cancellationToken).ConfigureAwait(false);
+
+            lock (_gate)
+            {
+                return _client ?? throw new OperationCanceledException();
+            }
+        }
+        finally
+        {
+            _reconnectGate.Release();
         }
     }
 
@@ -224,15 +314,7 @@ public sealed partial class SshConnection : ObservableObject
     {
         var boundedTimeout = BoundTimeout(timeout);
 
-        SshClient client;
-        lock (_gate)
-        {
-            if (_invalidated || _client is null)
-            {
-                throw new OperationCanceledException();
-            }
-            client = _client;
-        }
+        var client = await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
 
         var sshCommand = client.CreateCommand(command);
         lock (_gate)
