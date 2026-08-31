@@ -231,6 +231,23 @@ func processPendingJobs(ctx context.Context, q queue.Queue, execute func(*queue.
 	}
 
 	startedAny := false
+	// Summarised rather than logged per job. A single timed-out job can hold
+	// paths that every one of a bulk operation's queued files sits under, and
+	// this pass runs four times a second - one line each, every pass, would
+	// bury everything else in the log while saying the same thing thousands
+	// of times.
+	blocked := 0
+	firstBlocked := ""
+	defer func() {
+		switch {
+		case blocked == 0:
+		case blocked == 1:
+			logger.Printf("Job %s touches a path a timed-out job may still be using; leaving it pending", firstBlocked)
+		default:
+			logger.Printf("%d jobs touch paths a timed-out job may still be using (first: %s); leaving them pending", blocked, firstBlocked)
+		}
+	}()
+
 	for _, job := range jobs {
 		// Stop claiming work as soon as a shutdown is requested. The job
 		// already in flight still runs to completion; the rest stay pending
@@ -247,7 +264,10 @@ func processPendingJobs(ctx context.Context, q queue.Queue, execute func(*queue.
 		// race with it. Leave it pending; it becomes eligible again as soon
 		// as that goroutine actually finishes.
 		if paths := jobPaths(job); busy.overlaps(paths) {
-			logger.Printf("Job %s touches a path a timed-out job may still be using; leaving it pending", job.ID)
+			if blocked == 0 {
+				firstBlocked = job.ID
+			}
+			blocked++
 			continue
 		}
 
