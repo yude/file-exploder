@@ -115,11 +115,16 @@ class SFTPService {
     /// queue is treated as stalled.
     private static let stalledQueueGracePeriod: TimeInterval = 30
 
-    /// Consecutive polling failures tolerated before a wait gives up. Each poll
-    /// is its own SSH connection, so one refused connection or dropped session
-    /// used to abort the wait and report a queued operation as failed - while
-    /// the server went on to run it. Only an unbroken run of failures means the
-    /// connection is really gone.
+    /// Consecutive polling failures tolerated before a wait gives up. One
+    /// refused connection or dropped session used to abort the wait and report
+    /// a queued operation as failed - while the server went on to run it. Only
+    /// an unbroken run of failures means the connection is really gone.
+    ///
+    /// Still needed now that polls share one multiplexed connection (see
+    /// SSHControlSocket) rather than each opening their own: a master that
+    /// drops takes the poll riding on it with it, and the next poll transparently
+    /// opens a new one. That is exactly the single blip this tolerance exists
+    /// to absorb.
     private static let pollFailuresTolerated = 3
 
     /// Wait for a queued operation. Once a job is running the wait is unbounded:
@@ -134,8 +139,11 @@ class SFTPService {
     /// in a row, so a busy queue is never mistaken for a dead one.
     func waitForJob(id: String, timeout: TimeInterval? = nil) async throws {
         let start = Date()
-        // Every poll opens its own SSH connection, so start snappy for the
-        // common quick operation and back off for copies that run for minutes.
+        // Start snappy for the common quick operation and back off for copies
+        // that run for minutes - the back-off is now about not asking the
+        // server the same question hundreds of times during a long copy, not
+        // about the cost of the poll itself: polls share one multiplexed
+        // connection (see SSHControlSocket) instead of each paying a handshake.
         var pollInterval: UInt64 = 300_000_000
         let maxPollInterval: UInt64 = 3_000_000_000
         var pendingSince = Date()
@@ -200,7 +208,8 @@ class SFTPService {
     /// high enough that a burst of simultaneous completions in a large batch
     /// doesn't serialize behind each other's SSH round trip, low enough that
     /// a very large batch doesn't spawn an unbounded number of ssh child
-    /// processes in one instant.
+    /// processes in one instant. Multiplexing spares each of them a handshake
+    /// but not a process, so the cap still matters.
     private static let maxConcurrentJobLookups = 8
 
     /// Waits for every job in `ids` to leave the active queue, sharing a
