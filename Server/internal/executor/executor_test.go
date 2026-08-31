@@ -1051,3 +1051,51 @@ func TestResolveWithTimeoutGivesUpOnAHungResolve(t *testing.T) {
 		t.Fatal("resolveWithTimeout reported success for a resolve that never returned")
 	}
 }
+
+// The merge preflight prunes any source subtree whose destination directory
+// does not exist, on the grounds that nothing under a directory that isn't
+// there can be occupied. That reasoning has to hold for conflicts nested
+// arbitrarily deep on the branches it *does* still walk, so exercise both
+// halves: a deep conflict under a shared directory is still reported, and a
+// deep name that only collides on the pruned branch is not.
+func TestValidateDirectoryMergeSeesDeepConflictsAndPrunesAbsentBranches(t *testing.T) {
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "source")
+	dst := filepath.Join(tmpDir, "destination")
+
+	// shared/ exists on both sides, so it is walked into.
+	mkdirAll(t, filepath.Join(src, "shared", "deep"))
+	mkdirAll(t, filepath.Join(dst, "shared", "deep"))
+	// absent/ exists only in the source, so its whole subtree is pruned.
+	mkdirAll(t, filepath.Join(src, "absent", "deep"))
+	writeFile(t, filepath.Join(src, "absent", "deep", "name"), "source")
+
+	if err := validateDirectoryMerge(src, dst); err != nil {
+		t.Fatalf("validateDirectoryMerge with no conflict = %v, want nil", err)
+	}
+
+	// A file the destination already occupies, several levels down a branch
+	// that exists on both sides, must still be found.
+	conflict := filepath.Join("shared", "deep", "conflict")
+	writeFile(t, filepath.Join(src, conflict), "source")
+	writeFile(t, filepath.Join(dst, conflict), "destination")
+
+	err := validateDirectoryMerge(src, dst)
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(dst, conflict)) {
+		t.Fatalf("validateDirectoryMerge = %v, want the deep conflicting path", err)
+	}
+}
+
+func mkdirAll(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+}

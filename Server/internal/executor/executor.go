@@ -402,7 +402,14 @@ func copyDir(src, dst string) error {
 		info os.FileInfo
 	}
 	var directories []directoryMetadata
-	err = filepath.Walk(src, func(path string, info os.FileInfo, walkErr error) error {
+	// WalkDir, not Walk: Walk lstats every entry it visits to build the
+	// os.FileInfo it passes in, and the only entries whose metadata is wanted
+	// here are the directories - copyFileTo lstats the source itself anyway,
+	// so a file's Walk-supplied info was fetched and then thrown away. WalkDir
+	// answers IsDir from the directory entry's own type, which costs no
+	// syscall at all, and d.Info() is asked for only where it is used. That
+	// halves the stat traffic of copying a large tree.
+	err = filepath.WalkDir(src, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -414,11 +421,15 @@ func copyDir(src, dst string) error {
 		if relPath != "." {
 			dstPath = filepath.Join(staging, relPath)
 		}
-		if info.IsDir() {
+		if entry.IsDir() {
 			if relPath != "." {
 				if err := os.Mkdir(dstPath, 0700); err != nil {
 					return err
 				}
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
 			}
 			directories = append(directories, directoryMetadata{path: dstPath, info: info})
 			return nil
@@ -477,7 +488,9 @@ func copyDir(src, dst string) error {
 // Directories may overlap recursively; every other occupied name is left for
 // the user to resolve rather than being overwritten or silently skipped.
 func validateDirectoryMerge(src, dst string) error {
-	return filepath.Walk(src, func(srcPath string, srcInfo os.FileInfo, walkErr error) error {
+	// WalkDir, not Walk: the source side needs nothing from an entry but
+	// whether it is a directory, which WalkDir answers without an lstat.
+	return filepath.WalkDir(src, func(srcPath string, srcEntry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -491,12 +504,21 @@ func validateDirectoryMerge(src, dst string) error {
 		}
 		dstInfo, err := os.Lstat(dstPath)
 		if errors.Is(err, fs.ErrNotExist) {
+			// Nothing under a destination directory that does not itself
+			// exist can exist either, so no descendant of this source
+			// directory can conflict. Skipping the subtree outright turns the
+			// usual merge - a large tree dropped onto a destination that
+			// shares only a directory name or two with it - from one lstat per
+			// source entry into one per entry that actually overlaps.
+			if srcEntry.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		if srcInfo.IsDir() && dstInfo.IsDir() {
+		if srcEntry.IsDir() && dstInfo.IsDir() {
 			return nil
 		}
 		return fmt.Errorf("destination entry already exists: %s", dstPath)
