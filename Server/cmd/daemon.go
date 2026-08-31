@@ -255,6 +255,14 @@ func runJobWithTimeout(q queue.Queue, execute func(*queue.Job) error, job *queue
 	done := make(chan error, 1)
 	go func() { done <- execute(job) }()
 
+	// NewTimer + Stop, not time.After: the job budget is 24h by default, and
+	// a time.After timer stays armed in the runtime's timer heap for its full
+	// duration however quickly the job actually finishes. Every job the daemon
+	// ran would leave one behind for a day - a slow, steady accumulation in a
+	// process that is meant to stay up indefinitely.
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
 	select {
 	case err := <-done:
 		if err != nil {
@@ -264,7 +272,7 @@ func runJobWithTimeout(q queue.Queue, execute func(*queue.Job) error, job *queue
 		}
 		logger.Printf("Job %s completed", job.ID)
 		recordTerminalStatus(q, job.ID, queue.StatusCompleted, "", logger)
-	case <-time.After(timeout):
+	case <-timer.C:
 		logger.Printf("Job %s exceeded its %s execution budget; marking it failed and moving on, but it may still be running in the background", job.ID, timeout)
 		recordTerminalStatus(q, job.ID, queue.StatusFailed, fmt.Sprintf("timed out after %s", timeout), logger)
 		busy.hold(job.ID, jobPaths(job))

@@ -241,10 +241,13 @@ func resolveAllowMissingWithTimeoutUsing(resolve func(string) (string, error), p
 		resolved, err := resolve(path)
 		done <- result{resolved, err}
 	}()
+	// NewTimer + Stop, not time.After: see statWithTimeoutUsing in list.go.
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case r := <-done:
 		return r.path, r.err
-	case <-time.After(timeout):
+	case <-timer.C:
 		return "", fmt.Errorf("timed out resolving symlinks in %s after %s", path, timeout)
 	}
 }

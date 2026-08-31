@@ -89,10 +89,18 @@ func statWithTimeoutUsing(stat func(string) (os.FileInfo, error), path string, t
 		}
 		result <- info
 	}()
+	// NewTimer + Stop, not time.After: a listing calls this once per symlink,
+	// and a time.After timer stays armed in the runtime's timer heap for its
+	// full duration even after the stat has already answered. A directory of
+	// symlinks that all resolve instantly would still leave one live
+	// symlinkResolveTimeout timer per entry behind it, all of them holding a
+	// channel nobody will ever read.
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case info := <-result:
 		return info, info != nil
-	case <-time.After(timeout):
+	case <-timer.C:
 		return nil, false
 	}
 }

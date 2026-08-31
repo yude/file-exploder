@@ -685,10 +685,15 @@ func resolveWithTimeout(resolve func(string) (string, error), path string, timeo
 		resolved, err := resolve(path)
 		done <- result{resolved, err}
 	}()
+	// NewTimer + Stop, not time.After: destinationInsideSource calls this
+	// twice for every directory move or copy, and a time.After timer stays
+	// armed for its full duration however quickly the resolution answers.
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case r := <-done:
 		return r.path, r.err
-	case <-time.After(timeout):
+	case <-timer.C:
 		return "", fmt.Errorf("timed out resolving symlinks in %s after %s", path, timeout)
 	}
 }
