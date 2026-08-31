@@ -16,6 +16,18 @@ public static class LenientJson
 
     public static List<T> DeserializeLenientArray<T>(JsonElement arrayElement, JsonSerializerOptions options)
     {
+        // EnumerateArray throws InvalidOperationException - not JsonException -
+        // on anything that isn't an array, which slips straight past every
+        // caller here: they all catch JsonException, because "the document is
+        // not what we asked for" is what that means to them. A servers.json
+        // holding `{}` or `null` (hand-edited, or corrupted into something
+        // that still parses) would take the whole window down rather than
+        // being reported as an unreadable server list.
+        if (arrayElement.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException($"expected a JSON array, got {arrayElement.ValueKind}");
+        }
+
         var results = new List<T>();
         foreach (var element in arrayElement.EnumerateArray())
         {

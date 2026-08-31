@@ -90,4 +90,20 @@ public sealed class SavedServersStoreTests : IDisposable
         var loaded = Assert.Single(SavedServersStore.Load());
         Assert.Equal("good", loaded.Name);
     }
+
+    /// A servers.json that parses but is not an array - hand-edited, or
+    /// corrupted into something still syntactically valid - must be reported
+    /// as an unreadable server list, the same as any other unreadable file.
+    /// EnumerateArray's own InvalidOperationException is not a JsonException
+    /// and would sail past the one place that reports this to the user.
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("null")]
+    [InlineData("\"a string\"")]
+    [InlineData("42")]
+    public void AFileThatIsNotAnArrayIsReportedAsUnreadable(string contents)
+    {
+        File.WriteAllText(_file, contents);
+        Assert.ThrowsAny<System.Text.Json.JsonException>(() => SavedServersStore.Load());
+    }
 }
