@@ -44,7 +44,7 @@ public sealed class KnownHostsStore
     private void Save()
     {
         var json = JsonSerializer.Serialize(_fingerprintsByHost, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(_path, json);
+        AtomicFile.WriteAllText(_path, json);
     }
 
     private static string KeyFor(string host, int port) => $"{host}:{port}";

@@ -84,7 +84,7 @@ public static class AppSettings
         lock (Gate)
         {
             _cached = mutate(_cached ?? ReadFromDisk());
-            File.WriteAllText(_filePath, JsonSerializer.Serialize(_cached));
+            AtomicFile.WriteAllText(_filePath, JsonSerializer.Serialize(_cached));
         }
         Changed?.Invoke();
     }

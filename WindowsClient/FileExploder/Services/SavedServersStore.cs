@@ -56,7 +56,7 @@ public static class SavedServersStore
         var json = JsonSerializer.Serialize(servers, JsonDefaults.SavedServers);
         lock (Gate)
         {
-            File.WriteAllText(_filePath, json);
+            AtomicFile.WriteAllText(_filePath, json);
         }
         Changed?.Invoke();
     }
