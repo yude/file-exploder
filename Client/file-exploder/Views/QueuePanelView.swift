@@ -8,6 +8,10 @@ struct QueuePanelView: View {
     @State private var logJobs: [QueueJob] = []
     @State private var isLoading = false
     @State private var isRefreshing = false
+    /// Set when a refresh is asked for while one is already in flight, so the
+    /// request is served when that one lands rather than thrown away. See
+    /// refresh().
+    @State private var refreshRequestedAgain = false
     @State private var errorMessage: String?
     /// Kept apart from errorMessage: a failed action is the user's own doing and
     /// must survive the next poll, which clears the polling error every two
@@ -55,8 +59,9 @@ struct QueuePanelView: View {
             // already-loaded data) - but that means switching tabs no longer
             // forces an immediate fetch either, so the just-selected tab
             // would otherwise show stale or empty data until the next
-            // 2-second tick happens to land. refresh() already guards
-            // against overlapping an in-flight poll.
+            // 2-second tick happens to land. A fetch already in flight for
+            // the *other* tab cannot stand in for this one, so refresh()
+            // queues this request behind it rather than dropping it.
             .onChange(of: selectedTab) { _, _ in
                 Task { await refresh() }
             }
@@ -177,23 +182,47 @@ struct QueuePanelView: View {
             isLoading = false
             return
         }
-        guard !isRefreshing else { return }
+        guard !isRefreshing else {
+            // Noted, not dropped. The fetch already in flight went out for
+            // whichever tab was selected when it started, so it cannot answer
+            // a request made after that - and every caller but the polling
+            // loop is exactly such a request: the tab switch (which has no
+            // data at all for the tab it just moved to), the refresh button,
+            // and the refresh after cancelling a job. Dropping them left the
+            // panel sitting on "履歴がありません" - which reads as "there is
+            // no history", not "not fetched yet" - until the next two-second
+            // tick happened to land, and left a just-cancelled job listed as
+            // pending. At most one request is ever queued, so this still
+            // rules out the pile-up the guard exists for.
+            refreshRequestedAgain = true
+            return
+        }
         isRefreshing = true
         errorMessage = nil
         defer {
             isRefreshing = false
             isLoading = false
         }
-        
-        do {
-            if selectedTab == 0 {
-                activeJobs = try await sftp.getQueueStatus()
-            } else {
-                logJobs = try await sftp.getJobLogs(limit: 50)
+
+        while true {
+            refreshRequestedAgain = false
+            do {
+                if selectedTab == 0 {
+                    activeJobs = try await sftp.getQueueStatus()
+                } else {
+                    logJobs = try await sftp.getJobLogs(limit: 50)
+                }
+            } catch {
+                if error is CancellationError { return }
+                errorMessage = error.localizedDescription
+                // Stop rather than immediately retrying a queued request
+                // against a server that just failed; the polling loop comes
+                // back around in two seconds anyway.
+                return
             }
-        } catch {
-            if error is CancellationError { return }
-            errorMessage = error.localizedDescription
+            if !refreshRequestedAgain {
+                return
+            }
         }
     }
 }
