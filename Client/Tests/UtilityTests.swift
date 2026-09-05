@@ -123,6 +123,50 @@ final class ErrorLogTests: XCTestCase {
         log.removeAll()
         XCTAssertNil(log.message)
     }
+
+    /// A bulk operation reports one error per file it could not finish, with
+    /// no bound on how many that is - every file in a directory the user
+    /// cannot write to, say. All of them used to be joined into the single
+    /// string the banner renders.
+    func testABulkFailureIsSummarisedRatherThanRenderedInFull() {
+        var log = ErrorLog()
+        log.addOperationErrors((0..<5000).map { "削除エラー (file-\($0).txt): 権限がありません" })
+
+        let lines = log.operationMessage?.components(separatedBy: "\n") ?? []
+        XCTAssertEqual(lines.count, ErrorLog.maxOperationErrors + 1)
+        XCTAssertEqual(lines.first, "削除エラー (file-0.txt): 権限がありません")
+        XCTAssertEqual(lines.last, "ほか \(5000 - ErrorLog.maxOperationErrors) 件のエラー")
+
+        // The whole point: what reaches a single text view stays small.
+        XCTAssertLessThan(log.operationMessage?.count ?? .max, 2000)
+    }
+
+    /// The count has to keep accumulating across separate operations, not
+    /// reset each time more errors arrive.
+    func testTheOverflowCountAccumulatesAcrossOperations() {
+        var log = ErrorLog()
+        for round in 0..<3 {
+            log.addOperationErrors((0..<ErrorLog.maxOperationErrors).map { "e\(round)-\($0)" })
+        }
+
+        XCTAssertEqual(log.operationErrors.count, ErrorLog.maxOperationErrors)
+        XCTAssertEqual(log.droppedOperationErrors, ErrorLog.maxOperationErrors * 2)
+        XCTAssertTrue(log.operationMessage?.hasSuffix("ほか \(ErrorLog.maxOperationErrors * 2) 件のエラー") ?? false)
+
+        // ...and retiring them retires the count too.
+        log.clearOperationErrors()
+        XCTAssertNil(log.operationMessage)
+        XCTAssertEqual(log.droppedOperationErrors, 0)
+    }
+
+    /// Under the cap nothing is added: the summary line only appears once
+    /// something has actually been left out.
+    func testNoSummaryLineWhenNothingWasLeftOut() {
+        var log = ErrorLog()
+        log.addOperationErrors((0..<ErrorLog.maxOperationErrors).map { "e\($0)" })
+        XCTAssertEqual(log.operationMessage?.components(separatedBy: "\n").count, ErrorLog.maxOperationErrors)
+        XCTAssertFalse(log.operationMessage?.contains("ほか") ?? true)
+    }
 }
 
 final class QueueJobClipboardLogTests: XCTestCase {
