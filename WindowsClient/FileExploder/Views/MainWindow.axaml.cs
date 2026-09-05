@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     internal FileListViewModel FileListViewModel => _fileListVM;
     internal FileListView FileListViewForTesting => FileList;
     internal SidebarView SidebarForTesting => Sidebar;
+    internal QueuePanelView QueuePanelForTesting => QueuePanel;
 
     // The generated fields for these two menu items are otherwise private,
     // and (unlike the always-visible menu bar itself) their containing

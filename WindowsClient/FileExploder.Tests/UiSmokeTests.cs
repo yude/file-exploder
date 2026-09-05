@@ -233,4 +233,54 @@ public sealed class UiSmokeTests : IDisposable
 
     private static T? FindDescendant<T>(Control root, string name) where T : Control =>
         root.GetVisualDescendants().OfType<T>().FirstOrDefault(c => c.Name == name);
+
+    /// Switching the queue panel's tab has to fetch for the tab just moved to:
+    /// it has no data of its own yet, and the poll loop only re-fetches every
+    /// two seconds.
+    ///
+    /// The collision this pins is deterministic, not a race the test hopes to
+    /// hit. Assigning Sftp starts the poll loop, whose first fetch runs
+    /// synchronously up to its own first await - marking a refresh in flight -
+    /// before control comes back here. Pressing 履歴 on the next line
+    /// therefore always lands while that first fetch is outstanding, which is
+    /// exactly the case that used to be dropped on the floor, leaving the
+    /// history tab on its "履歴がありません" empty state until the next tick.
+    [Fact]
+    public void SwitchingQueuePanelTabsFetchesForTheNewTabEvenMidPoll() => HeadlessApp.RunOnUiThread(() =>
+    {
+        var window = new MainWindow();
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+
+        var server = new Server
+        {
+            Name = "queue-panel-test",
+            Hostname = "localhost",
+            Port = (ushort)_fixture.Port,
+            Username = _fixture.Username,
+            KeyPath = _fixture.PrivateKeyPath,
+            RemoteRoot = _scratchDir,
+        };
+        TestUiHelpers.PumpUntilCompleted(
+            window.ConnectionViewModel.ConnectAsync(server, window.FileListViewModel),
+            TimeSpan.FromSeconds(15));
+
+        var panel = window.QueuePanelForTesting;
+        // Straight onto the live connection, the way MainWindow does when the
+        // queue panel is revealed - this starts the poll loop.
+        panel.Sftp = window.FileListViewModel.Sftp;
+        panel.HistoryTabButtonForTesting.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+        // Well inside the 2-second poll interval: passing this means the tab
+        // switch got its own fetch rather than waiting for the next tick.
+        // The daemon has run at least the jobs this suite queued, so the
+        // history is never empty.
+        TestUiHelpers.PumpUntil(
+            () => panel.JobListForTesting.ItemsSource?.Cast<QueueJob>().Any() == true,
+            TimeSpan.FromMilliseconds(1500),
+            "the history tab's own fetch");
+
+        panel.Sftp = null;
+        window.Close();
+    });
 }

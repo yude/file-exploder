@@ -28,4 +28,20 @@ internal static class TestUiHelpers
         // an AggregateException wrapping it.
         task.GetAwaiter().GetResult();
     }
+
+    /// PumpUntilCompleted's condition-based sibling, for state that is
+    /// reached by a background poll rather than by one awaitable task.
+    public static void PumpUntil(Func<bool> condition, TimeSpan timeout, string what)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (!condition())
+        {
+            Dispatcher.UIThread.RunJobs();
+            if (DateTime.UtcNow > deadline)
+            {
+                throw new TimeoutException($"{what} did not happen within {timeout}.");
+            }
+            Thread.Sleep(10);
+        }
+    }
 }
